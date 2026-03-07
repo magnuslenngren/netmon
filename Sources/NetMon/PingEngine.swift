@@ -1,6 +1,7 @@
 import Foundation
 import AppKit
 import SwiftUI
+import Darwin
 
 // ---------------------------------------------------------------------------
 // PingResult
@@ -9,6 +10,8 @@ struct PingResult: Identifiable {
     let id        = UUID()
     let timestamp: Date
     let latencyMs: Double?   // nil = timeout / unreachable
+    let bytesIn: Double
+    let bytesOut: Double
 }
 
 // ---------------------------------------------------------------------------
@@ -50,6 +53,7 @@ final class PingEngine {
     private(set) var results: [PingResult] = []
     private let maxHistory = 60
     private var timer: Timer?
+    private var lastIOSnapshot: IOSnapshot?
     var onUpdate: (() -> Void)?
 
     init(endpoint: Endpoint) {
@@ -87,13 +91,13 @@ final class PingEngine {
             let data   = pipe.fileHandleForReading.readDataToEndOfFile()
             let output = String(data: data, encoding: .utf8) ?? ""
             let ms     = Self.parse(output: output, fallbackElapsed: Date().timeIntervalSince(startTime))
-            self?.record(PingResult(timestamp: startTime, latencyMs: ms))
+            self?.record(PingResult(timestamp: startTime, latencyMs: ms, bytesIn: 0, bytesOut: 0))
         }
 
         do {
             try process.run()
         } catch {
-            record(PingResult(timestamp: startTime, latencyMs: nil))
+            record(PingResult(timestamp: startTime, latencyMs: nil, bytesIn: 0, bytesOut: 0))
         }
     }
 
@@ -124,11 +128,57 @@ final class PingEngine {
     private func record(_ result: PingResult) {
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
-            self.results.append(result)
+            let snap = IOSnapshot.capture()
+            let delta = self.lastIOSnapshot.map { snap.delta(from: $0) } ?? IOSnapshot.zero
+            self.lastIOSnapshot = snap
+
+            let enriched = PingResult(timestamp: result.timestamp,
+                                      latencyMs: result.latencyMs,
+                                      bytesIn: Double(delta.inBytes),
+                                      bytesOut: Double(delta.outBytes))
+            self.results.append(enriched)
             if self.results.count > self.maxHistory {
                 self.results.removeFirst(self.results.count - self.maxHistory)
             }
             self.onUpdate?()
         }
+    }
+}
+
+private struct IOSnapshot {
+    let inBytes: UInt64
+    let outBytes: UInt64
+
+    static let zero = IOSnapshot(inBytes: 0, outBytes: 0)
+
+    static func capture() -> IOSnapshot {
+        var pointer: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&pointer) == 0, let first = pointer else { return .zero }
+        defer { freeifaddrs(first) }
+
+        var rx: UInt64 = 0
+        var tx: UInt64 = 0
+        var cursor: UnsafeMutablePointer<ifaddrs>? = first
+        while let current = cursor {
+            let ifa = current.pointee
+            defer { cursor = ifa.ifa_next }
+
+            let flags = Int32(ifa.ifa_flags)
+            let up = (flags & IFF_UP) != 0
+            let loopback = (flags & IFF_LOOPBACK) != 0
+            guard up, !loopback else { continue }
+            guard ifa.ifa_addr?.pointee.sa_family == UInt8(AF_LINK) else { continue }
+            guard let dataPtr = ifa.ifa_data else { continue }
+
+            let netData = dataPtr.assumingMemoryBound(to: if_data.self).pointee
+            rx += UInt64(netData.ifi_ibytes)
+            tx += UInt64(netData.ifi_obytes)
+        }
+        return IOSnapshot(inBytes: rx, outBytes: tx)
+    }
+
+    func delta(from previous: IOSnapshot) -> IOSnapshot {
+        IOSnapshot(inBytes: inBytes >= previous.inBytes ? inBytes - previous.inBytes : 0,
+                   outBytes: outBytes >= previous.outBytes ? outBytes - previous.outBytes : 0)
     }
 }

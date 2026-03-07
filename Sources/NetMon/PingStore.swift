@@ -22,7 +22,15 @@ final class PingStore: ObservableObject {
     @Published var pingInterval: Double = 1.0 {
         didSet { save(); restart() }
     }
-    @Published var isCompact: Bool = false
+    @Published var isCompact: Bool = false {
+        didSet { save() }
+    }
+    @Published var showLatencyGraph: Bool = true {
+        didSet { save() }
+    }
+    @Published var showTrafficGraph: Bool = true {
+        didSet { save() }
+    }
 
     private let defaultsKey = "netmon.config"
 
@@ -60,7 +68,10 @@ final class PingStore: ObservableObject {
         let data: [String: Any] = [
             "endpoints":    (try? JSONEncoder().encode(endpoints)) as Any,
             "alwaysOnTop":  alwaysOnTop,
-            "pingInterval": pingInterval
+            "pingInterval": pingInterval,
+            "isCompact":    isCompact,
+            "showLatencyGraph": showLatencyGraph,
+            "showTrafficGraph": showTrafficGraph
         ]
         UserDefaults.standard.set(data, forKey: defaultsKey)
     }
@@ -73,5 +84,8 @@ final class PingStore: ObservableObject {
         }
         alwaysOnTop  = data["alwaysOnTop"]  as? Bool   ?? true
         pingInterval = data["pingInterval"] as? Double ?? 1.0
+        isCompact    = data["isCompact"]    as? Bool   ?? false
+        showLatencyGraph = data["showLatencyGraph"] as? Bool ?? true
+        showTrafficGraph = data["showTrafficGraph"] as? Bool ?? true
     }
 }
