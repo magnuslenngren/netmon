@@ -1,5 +1,36 @@
 import SwiftUI
 
+struct DisplayPingPoint {
+    let timestamp: Date
+    let latencyMs: Double
+}
+
+func clipPointsToWindow(_ points: [DisplayPingPoint],
+                        now: Date,
+                        windowSeconds: TimeInterval) -> [DisplayPingPoint] {
+    guard !points.isEmpty else { return [] }
+    let boundary = now.addingTimeInterval(-windowSeconds)
+    let sorted = points.sorted { $0.timestamp < $1.timestamp }
+    var clipped = sorted.filter { $0.timestamp >= boundary && $0.timestamp <= now }
+
+    if let firstInside = clipped.first,
+       let insideIdx = sorted.firstIndex(where: { $0.timestamp == firstInside.timestamp }),
+       insideIdx > 0 {
+        let before = sorted[insideIdx - 1]
+        let after = sorted[insideIdx]
+        if before.timestamp < boundary, after.timestamp > boundary {
+            let span = after.timestamp.timeIntervalSince(before.timestamp)
+            if span > 0 {
+                let ratio = boundary.timeIntervalSince(before.timestamp) / span
+                let ms = before.latencyMs + (after.latencyMs - before.latencyMs) * ratio
+                clipped.insert(DisplayPingPoint(timestamp: boundary, latencyMs: ms), at: 0)
+            }
+        }
+    }
+
+    return clipped
+}
+
 // Shared latency → color mapping used by graph, badge and dot
 func latencyColor(_ ms: Double) -> Color {
     if ms < 50  { return Color(red: 0.25, green: 0.92, blue: 0.55) }
@@ -12,53 +43,122 @@ func latencyColor(_ ms: Double) -> Color {
 // ---------------------------------------------------------------------------
 struct LatencyGraphView: View {
     @EnvironmentObject var store: PingStore
+    private let graphWindowSeconds: TimeInterval = 60
+    private var displayLagSeconds: TimeInterval { max(store.pingInterval, 0.2) }
+    @State private var displayedRange = Range(min: 0, max: 120)
 
     var body: some View {
-        GeometryReader { geo in
-            let sz    = geo.size
-            let range = dynamicRange()
+        TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: false)) { timeline in
+            GeometryReader { geo in
+                let sz    = geo.size
+                let displayNow = timeline.date.addingTimeInterval(-displayLagSeconds)
+                let targetRange = dynamicRange(now: displayNow)
+                let range = displayedRange
 
-            ZStack(alignment: .topLeading) {
-                GridLines(size: sz, minMs: range.min, maxMs: range.max)
+                ZStack(alignment: .topLeading) {
+                    GridLines(size: sz, minMs: range.min, maxMs: range.max)
 
-                ForEach(store.endpoints, id: \.id) { ep in
-                    if let eng = store.engines[ep.id], eng.results.count >= 2 {
-                        AreaShape(results: eng.results,
-                                  size: sz, minMs: range.min, maxMs: range.max)
-                        LineShape(results: eng.results,
-                                  size: sz, minMs: range.min, maxMs: range.max)
+                    ForEach(store.endpoints, id: \.id) { ep in
+                        if let eng = store.engines[ep.id] {
+                            let points = displayPoints(from: eng.results, now: displayNow)
+                            AreaShape(results: eng.results,
+                                      points: points,
+                                      size: sz,
+                                      minMs: range.min,
+                                      maxMs: range.max,
+                                      now: displayNow,
+                                      windowSeconds: graphWindowSeconds)
+                            LineShape(results: eng.results,
+                                      points: points,
+                                      size: sz,
+                                      minMs: range.min,
+                                      maxMs: range.max,
+                                      now: displayNow,
+                                      windowSeconds: graphWindowSeconds)
+                        }
+                    }
+
+                    ForEach(store.endpoints, id: \.id) { ep in
+                        if let eng = store.engines[ep.id],
+                           let latest = displayPoints(from: eng.results, now: displayNow).last {
+                            LiveDot(color: latencyColor(latest.latencyMs))
+                                .position(
+                                    x: xPos(for: latest.timestamp, now: displayNow, width: sz.width),
+                                    y: yFrac(latest.latencyMs, range) * sz.height
+                                )
+                        }
+                    }
+
+                    YLabels(size: sz, minMs: range.min, maxMs: range.max)
+                }
+                .onAppear {
+                    displayedRange = targetRange
+                }
+                .onChange(of: targetRange) { _, newRange in
+                    withAnimation(.easeInOut(duration: max(store.pingInterval * 0.55, 0.20))) {
+                        displayedRange = newRange
                     }
                 }
-
-                ForEach(store.endpoints, id: \.id) { ep in
-                    if let eng = store.engines[ep.id],
-                       let ms  = eng.results.last?.latencyMs {
-                        LiveDot(color: latencyColor(ms))
-                            .position(x: sz.width,
-                                      y: yFrac(ms, range) * sz.height)
-                    }
-                }
-
-                YLabels(size: sz, minMs: range.min, maxMs: range.max)
             }
         }
     }
 
-    struct Range { var min: Double; var max: Double }
+    struct Range: Equatable { var min: Double; var max: Double }
 
-    func dynamicRange() -> Range {
+    func dynamicRange(now: Date) -> Range {
         let all = store.endpoints.flatMap {
-            store.engines[$0.id]?.results.compactMap(\.latencyMs) ?? []
+            store.engines[$0.id]?.results.compactMap { result -> Double? in
+                guard let ms = result.latencyMs else { return nil }
+                let age = now.timeIntervalSince(result.timestamp)
+                guard age >= 0, age <= graphWindowSeconds else { return nil }
+                return ms
+            } ?? []
         }
         guard !all.isEmpty else { return Range(min: 0, max: 120) }
         let lo   = max(0, all.min()! - 5)
-        let hi   = all.max()! * 1.15
+        let hi   = all.max()! * 1.10
         let span = max(hi - lo, 30)
         return Range(min: lo, max: lo + span)
     }
 
     func yFrac(_ ms: Double, _ r: Range) -> CGFloat {
         CGFloat(1 - (min(max(ms, r.min), r.max) - r.min) / (r.max - r.min))
+    }
+
+    func xPos(for timestamp: Date, now: Date, width: CGFloat) -> CGFloat {
+        let age = now.timeIntervalSince(timestamp)
+        let frac = max(0, min(1, 1 - age / graphWindowSeconds))
+        return width * CGFloat(frac)
+    }
+
+    // Smoothly reveals the newest segment over one sample interval instead of
+    // popping the whole segment in on a single frame.
+    func displayPoints(from results: [PingResult], now: Date) -> [DisplayPingPoint] {
+        let vals = results.compactMap { result -> DisplayPingPoint? in
+            guard let ms = result.latencyMs else { return nil }
+            let age = now.timeIntervalSince(result.timestamp)
+            guard age >= 0 else { return nil }
+            return DisplayPingPoint(timestamp: result.timestamp, latencyMs: ms)
+        }
+        guard vals.count >= 2 else { return vals }
+
+        var displayed = vals
+        let lastIdx = displayed.count - 1
+        let prev = displayed[lastIdx - 1]
+        let next = displayed[lastIdx]
+
+        let sampleDuration = max(store.pingInterval,
+                                 next.timestamp.timeIntervalSince(prev.timestamp),
+                                 0.2)
+        let reveal = max(0, min(1, now.timeIntervalSince(next.timestamp) / sampleDuration))
+        if reveal < 1 {
+            let t = prev.timestamp.addingTimeInterval(
+                next.timestamp.timeIntervalSince(prev.timestamp) * reveal
+            )
+            let ms = prev.latencyMs + (next.latencyMs - prev.latencyMs) * reveal
+            displayed[lastIdx] = DisplayPingPoint(timestamp: t, latencyMs: ms)
+        }
+        return displayed
     }
 }
 
@@ -113,12 +213,16 @@ struct YLabels: View {
 
     var body: some View {
         let lines = gridValues()
+        let top = lines.max()
         return ZStack(alignment: .topLeading) {
             ForEach(lines, id: \.self) { ms in
                 let y = CGFloat(1 - (ms - minMs) / (maxMs - minMs)) * size.height
+                let isTop = ms == top
                 Text("\(Int(ms))")
-                    .font(.system(size: 7.5, weight: .medium, design: .monospaced))
-                    .foregroundStyle(Color.white.opacity(0.28))
+                    .font(.system(size: 7.5,
+                                  weight: isTop ? .semibold : .medium,
+                                  design: .monospaced))
+                    .foregroundStyle(Color.white.opacity(isTop ? 0.45 : 0.28))
                     .offset(x: 3, y: y - 9)
             }
         }
@@ -145,20 +249,23 @@ struct YLabels: View {
 // ---------------------------------------------------------------------------
 struct AreaShape: View {
     let results: [PingResult]
+    let points:  [DisplayPingPoint]
     let size:    CGSize
     let minMs:   Double
     let maxMs:   Double
+    let now:     Date
+    let windowSeconds: TimeInterval
 
     var body: some View {
         let pts      = validPoints()
-        let latestMs = results.compactMap(\.latencyMs).last ?? 20
+        let latestMs = pts.last?.ms ?? 20
         let color    = latencyColor(latestMs)
         guard pts.count >= 2 else { return AnyView(EmptyView()) }
 
         let path = Path { p in
-            p.move(to: CGPoint(x: pts[0].x, y: size.height))
-            pts.forEach { p.addLine(to: $0) }
-            p.addLine(to: CGPoint(x: pts.last!.x, y: size.height))
+            p.move(to: CGPoint(x: pts[0].point.x, y: size.height))
+            pts.forEach { p.addLine(to: $0.point) }
+            p.addLine(to: CGPoint(x: pts.last!.point.x, y: size.height))
             p.closeSubpath()
         }
         return AnyView(
@@ -169,13 +276,17 @@ struct AreaShape: View {
         )
     }
 
-    func validPoints() -> [CGPoint] {
-        results.compactMap(\.latencyMs).enumerated().map { i, ms in
-            let total = results.compactMap(\.latencyMs).count
-            return CGPoint(
-                x: size.width  * CGFloat(i) / CGFloat(max(total - 1, 1)),
-                y: CGFloat(1 - (min(max(ms, minMs), maxMs) - minMs) / (maxMs - minMs)) * size.height
-            )
+    struct Pt { let point: CGPoint; let ms: Double }
+
+    func validPoints() -> [Pt] {
+        clipPointsToWindow(points, now: now, windowSeconds: windowSeconds).compactMap { point in
+            let age = now.timeIntervalSince(point.timestamp)
+            guard age >= 0, age <= windowSeconds else { return nil }
+            let frac = 1 - age / windowSeconds
+            return Pt(point: CGPoint(
+                x: size.width * CGFloat(frac),
+                y: CGFloat(1 - (min(max(point.latencyMs, minMs), maxMs) - minMs) / (maxMs - minMs)) * size.height
+            ), ms: point.latencyMs)
         }
     }
 }
@@ -185,9 +296,12 @@ struct AreaShape: View {
 // ---------------------------------------------------------------------------
 struct LineShape: View {
     let results: [PingResult]
+    let points:  [DisplayPingPoint]
     let size:    CGSize
     let minMs:   Double
     let maxMs:   Double
+    let now:     Date
+    let windowSeconds: TimeInterval
 
     struct Pt { let point: CGPoint; let ms: Double }
 
@@ -218,13 +332,14 @@ struct LineShape: View {
     }
 
     func validPoints() -> [Pt] {
-        let vals = results.compactMap(\.latencyMs)
-        guard vals.count >= 2 else { return [] }
-        return vals.enumerated().map { i, ms in
-            Pt(point: CGPoint(
-                x: size.width  * CGFloat(i) / CGFloat(vals.count - 1),
-                y: CGFloat(1 - (min(max(ms, minMs), maxMs) - minMs) / (maxMs - minMs)) * size.height
-            ), ms: ms)
+        clipPointsToWindow(points, now: now, windowSeconds: windowSeconds).compactMap { point in
+            let age = now.timeIntervalSince(point.timestamp)
+            guard age >= 0, age <= windowSeconds else { return nil }
+            let frac = 1 - age / windowSeconds
+            return Pt(point: CGPoint(
+                x: size.width * CGFloat(frac),
+                y: CGFloat(1 - (min(max(point.latencyMs, minMs), maxMs) - minMs) / (maxMs - minMs)) * size.height
+            ), ms: point.latencyMs)
         }
     }
 }

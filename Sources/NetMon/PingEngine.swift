@@ -43,7 +43,7 @@ struct CodableColor: Codable, Equatable {
 
 // ---------------------------------------------------------------------------
 // PingEngine — uses /sbin/ping (ICMP, no root needed via subprocess)
-// 1 packet, 56-byte payload (standard ping default), 2s timeout
+// 1 packet, 56-byte payload (standard ping default), 1s timeout
 // ---------------------------------------------------------------------------
 final class PingEngine {
     let endpoint: Endpoint
@@ -56,7 +56,7 @@ final class PingEngine {
         self.endpoint = endpoint
     }
 
-    func start(interval: TimeInterval = 2.0) {
+    func start(interval: TimeInterval = 1.0) {
         probe()
         timer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
             self?.probe()
@@ -68,9 +68,9 @@ final class PingEngine {
         timer = nil
     }
 
-    // Spawn /sbin/ping -c 1 -W 2000 -s 56 <host>
+    // Spawn /sbin/ping -c 1 -W 1000 -s 56 <host>
     // -c 1  : one packet
-    // -W 2000: 2 second timeout (milliseconds on macOS)
+    // -W 1000: 1 second timeout (milliseconds on macOS)
     // -s 56 : 56-byte payload (standard, same as default ping)
     private func probe() {
         let host      = endpoint.host
@@ -79,7 +79,7 @@ final class PingEngine {
         let pipe      = Pipe()
 
         process.executableURL = URL(fileURLWithPath: "/sbin/ping")
-        process.arguments     = ["-c", "1", "-W", "2000", "-s", "56", host]
+        process.arguments     = ["-c", "1", "-W", "1000", "-s", "56", host]
         process.standardOutput = pipe
         process.standardError  = pipe
 

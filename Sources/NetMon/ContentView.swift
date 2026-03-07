@@ -28,7 +28,13 @@ struct ContentView: View {
                height: store.isCompact ? kWidgetCompactHeight : kWidgetHeight)
         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         .animation(.spring(response: 0.3, dampingFraction: 0.8), value: store.isCompact)
+        .onAppear { updateWindowTitle() }
+        .onChange(of: store.endpoints) { _, _ in updateWindowTitle() }
+    }
 
+    private func updateWindowTitle() {
+        guard let window = NSApp.windows.first(where: { $0 is GlassWindow }) else { return }
+        window.title = store.endpoints.first?.host ?? "NetMon"
     }
 }
 
@@ -44,7 +50,7 @@ struct HeaderBar: View {
             PulsingDot(color: statusColor)
 
             // Title
-            Text("NetMon")
+            Text(store.endpoints.first?.host ?? "NetMon")
                 .font(.system(size: 10, weight: .semibold, design: .rounded))
                 .foregroundStyle(.white.opacity(0.85))
 
@@ -165,8 +171,8 @@ struct GlassBackground: View {
             RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .fill(LinearGradient(
                     colors: [
-                        Color(red: 0.09, green: 0.10, blue: 0.16).opacity(0.85),
-                        Color(red: 0.06, green: 0.07, blue: 0.12).opacity(0.90),
+                        Color(red: 0.09, green: 0.10, blue: 0.16).opacity(0.55),
+                        Color(red: 0.06, green: 0.07, blue: 0.12).opacity(0.62),
                     ],
                     startPoint: .topLeading, endPoint: .bottomTrailing
                 ))
@@ -174,7 +180,7 @@ struct GlassBackground: View {
             // Gloss sheen on top edge
             RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .fill(LinearGradient(
-                    colors: [.white.opacity(0.07), .clear],
+                    colors: [.white.opacity(0.05), .clear],
                     startPoint: .top,
                     endPoint: .init(x: 0.5, y: 0.5)
                 ))
@@ -183,7 +189,7 @@ struct GlassBackground: View {
             RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .strokeBorder(
                     LinearGradient(
-                        colors: [.white.opacity(0.28), .white.opacity(0.06)],
+                        colors: [.white.opacity(0.20), .white.opacity(0.04)],
                         startPoint: .topLeading,
                         endPoint: .bottomTrailing
                     ),

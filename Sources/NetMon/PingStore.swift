@@ -6,6 +6,9 @@ import AppKit
 // PingStore  –  ObservableObject driving the UI
 // ---------------------------------------------------------------------------
 final class PingStore: ObservableObject {
+    private static let forcedEndpoint = Endpoint(label: "Cloudflare",
+                                                 host: "1.1.1.1",
+                                                 color: CodableColor(.systemGreen))
     @Published var endpoints: [Endpoint] = [] {
         didSet { save(); restart() }
     }
@@ -16,7 +19,7 @@ final class PingStore: ObservableObject {
             applyWindowLevel()
         }
     }
-    @Published var pingInterval: Double = 2.0 {
+    @Published var pingInterval: Double = 1.0 {
         didSet { save(); restart() }
     }
     @Published var isCompact: Bool = false
@@ -25,7 +28,7 @@ final class PingStore: ObservableObject {
 
     init() {
         load()
-        if endpoints.isEmpty { endpoints = Endpoint.defaults }
+        endpoints = [Self.forcedEndpoint]
         restart()
     }
 
@@ -69,6 +72,6 @@ final class PingStore: ObservableObject {
             endpoints = eps
         }
         alwaysOnTop  = data["alwaysOnTop"]  as? Bool   ?? true
-        pingInterval = data["pingInterval"] as? Double ?? 2.0
+        pingInterval = data["pingInterval"] as? Double ?? 1.0
     }
 }
