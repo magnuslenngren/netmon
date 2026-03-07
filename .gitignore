@@ -1,0 +1,8 @@
+.build/
+*.o
+*.d
+*.dia
+NetMon.iconset/
+NetMon.app/Contents/MacOS/NetMon
+make_icon.swift
+NetMon.app/Contents/Resources/AppIcon.icns
