@@ -67,12 +67,43 @@ ditto NetMon.app /Applications/NetMon.app
 open /Applications/NetMon.app
 ```
 
+## Install From Release (No Xcode Needed)
+
+1. Download the latest `.dmg` from [GitHub Releases](https://github.com/magnuslenngren/netmon/releases).
+2. Open the `.dmg`.
+3. Drag `NetMon.app` to `Applications`.
+4. Launch from `Applications`.
+
+If macOS shows an unidentified developer warning, use **Right-click -> Open** the first time.
+
 ## Fast Run Script
 
 Use the included script to rebuild, install to `/Applications`, and relaunch:
 
 ```bash
 ./run-netmon.sh
+```
+
+## Build DMG (Maintainers)
+
+Create a versioned DMG artifact:
+
+```bash
+./scripts/build-dmg.sh 1.0.0
+```
+
+If no version is provided, it uses `YYYY.MM.DD-<short-sha>`.
+
+## Publish GitHub Release (Maintainers)
+
+Example:
+
+```bash
+VERSION=1.0.0
+DMG_PATH="$(./scripts/build-dmg.sh "$VERSION")"
+gh release create "v$VERSION" "$DMG_PATH" \
+  --title "NetMon v$VERSION" \
+  --notes "macOS app DMG build"
 ```
 
 ## Auto-launch at Login
