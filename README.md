@@ -4,17 +4,6 @@ A minimal macOS network monitor widget that lives in the top-right corner of you
 
 ![NetMon widget showing real-time latency graph](https://github.com/magnuslenngren/netmon/raw/master/screenshot.png)
 
-## More Screenshots
-
-![Expanded widget view with latency and bytes charts](docs/screenshots/netmon-screenshot-1.png)
-*Expanded widget with dual-series network graph, axis labels, and compact metric badges.*
-
-![Regular widget view with balanced chart density](docs/screenshots/netmon-screenshot-2.png)
-*Regular-size widget showing latency foreground and mirrored bytes traffic series.*
-
-![Minimized title-bar view](docs/screenshots/netmon-screenshot-3.png)
-*Minimized mode (title bar only) with live latency and traffic badges.*
-
 ## Features
 
 - **Real-time ICMP ping** — pings Cloudflare (`1.1.1.1`) every 1 second using standard 56-byte packets
@@ -50,6 +39,17 @@ A minimal macOS network monitor widget that lives in the top-right corner of you
 - **Loss badge behavior**:
   - Latency box shows red `∞` during packet loss
 - No Dock icon, no menu bar clutter
+
+## More Screenshots
+
+![Expanded widget view with latency and bytes charts](docs/screenshots/netmon-screenshot-1.jpg)
+*Expanded widget with dual-series network graph, axis labels, and compact metric badges.*
+
+![Regular widget view with balanced chart density](docs/screenshots/netmon-screenshot-2.jpg)
+*Regular-size widget showing latency foreground and mirrored bytes traffic series.*
+
+![Minimized title-bar view](docs/screenshots/netmon-screenshot-3.jpg)
+*Minimized mode (title bar only) with live latency and traffic badges.*
 
 ## Requirements
 
