@@ -13,6 +13,7 @@ struct ContentView: View {
     var body: some View {
         ZStack {
             GlassBackground()
+                .environmentObject(store)
 
             VStack(spacing: 0) {
                 HeaderBar()
@@ -44,11 +45,8 @@ struct ContentView: View {
         }
         .overlay(
             ClickHandler(
-                onDoubleClick: {
-                    withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
-                        store.isCompact.toggle()
-                    }
-                    resizeWindow(compact: store.isCompact)
+                onDoubleClick: { event in
+                    handleDoubleClick(event)
                 },
                 onRightClick: { event in
                     let menu = NSMenu()
@@ -58,6 +56,7 @@ struct ContentView: View {
                     target.onToggleAlwaysOnTop = { store.alwaysOnTop.toggle() }
                     target.onToggleExpand = { toggleExpandOrRestore() }
                     target.onMinimize = { toggleCompactMode() }
+                    target.onSetTintLevel = { level in store.tintLevel = level }
 
                     // View options section
                     let alwaysOnTopItem = NSMenuItem(title: "Always on Top",
@@ -75,7 +74,7 @@ struct ContentView: View {
                     menu.addItem(minimizeItem)
 
                     if !store.isCompact {
-                        let expandItem = NSMenuItem(title: isExpandedWindow ? "Restore Size" : "Expand",
+                        let expandItem = NSMenuItem(title: isExpandedWindow ? "Restore Size" : "Expand (x4)",
                                                     action: #selector(ContextMenuActionTarget.handleToggleExpand(_:)),
                                                     keyEquivalent: "e")
                         expandItem.target = target
@@ -94,6 +93,27 @@ struct ContentView: View {
                         resetItem.keyEquivalentModifierMask = [.command]
                         menu.addItem(resetItem)
                     }
+
+                    let tintMenu = NSMenu(title: "Tint")
+                    let tintOptions: [(String, Int)] = [
+                        ("Very Light", 0),
+                        ("Light", 1),
+                        ("Balanced", 2),
+                        ("Dark", 3),
+                        ("Very Dark", 4),
+                    ]
+                    for (name, level) in tintOptions {
+                        let tintItem = NSMenuItem(title: name,
+                                                  action: #selector(ContextMenuActionTarget.handleSetTintLevel(_:)),
+                                                  keyEquivalent: "")
+                        tintItem.target = target
+                        tintItem.tag = level
+                        tintItem.state = store.tintLevel == level ? .on : .off
+                        tintMenu.addItem(tintItem)
+                    }
+                    let tintRoot = NSMenuItem(title: "Tint/Blur", action: nil, keyEquivalent: "")
+                    menu.setSubmenu(tintMenu, for: tintRoot)
+                    menu.addItem(tintRoot)
                     menu.addItem(NSMenuItem.separator())
 
                     // Graph options section
@@ -127,6 +147,27 @@ struct ContentView: View {
     private func updateWindowTitle() {
         guard let window = NSApp.windows.first(where: { $0 is GlassWindow }) else { return }
         window.title = store.endpoints.first?.host ?? "NetMon"
+    }
+
+    private func handleDoubleClick(_ event: NSEvent) {
+        guard let contentView = event.window?.contentView else { return }
+        let point = contentView.convert(event.locationInWindow, from: nil)
+        // Header hit zone: bar height + very small buffer.
+        let headerHeight = store.isCompact
+            ? contentView.bounds.height
+            : ((18.0 + (2.0 * 7.0)) + 3.0)
+        let distanceFromTop = contentView.isFlipped
+            ? point.y
+            : (contentView.bounds.height - point.y)
+
+        if distanceFromTop <= headerHeight {
+            toggleCompactMode()
+            return
+        }
+
+        if !store.isCompact {
+            toggleExpandOrRestore()
+        }
     }
 
     // Animate window height while keeping top-right corner pinned
@@ -188,7 +229,7 @@ struct ContentView: View {
 
         preExpandFrame = NSStringFromRect(window.frame)
         let current = window.frame
-        let visible = primaryVisibleFrame()
+        let visible = currentOrPrimaryVisibleFrame(for: window)
         var target = current
         target.size = NSSize(width: current.width * 4, height: current.height * 4)
 
@@ -266,7 +307,7 @@ struct HeaderBar: View {
     }
 
     private var latencyValueText: String {
-        guard let ms = latestResult?.latencyMs else { return "—" }
+        guard let ms = latestResult?.latencyMs else { return "∞" }
         return String(format: "%.0fms", ms)
     }
 
@@ -281,7 +322,9 @@ struct HeaderBar: View {
     }
 
     private var latencyBoxColor: Color {
-        guard let ms = latestResult?.latencyMs else { return .white.opacity(0.6) }
+        guard let ms = latestResult?.latencyMs else {
+            return Color(red: 1.0, green: 0.35, blue: 0.35)
+        }
         return latencyColor(ms)
     }
 
@@ -340,14 +383,17 @@ struct HeaderBar: View {
     }
 
     private func metricBox(label: String, value: String, color: Color, style: HeaderStyle) -> some View {
-        HStack(spacing: 4) {
+        let isInfinity = value == "∞"
+        return HStack(spacing: 4) {
             if !label.isEmpty {
                 Text(label)
                     .font(.system(size: style.labelSize, weight: .semibold, design: .rounded))
                     .foregroundStyle(.white.opacity(0.65))
             }
             Text(value)
-                .font(.system(size: style.valueSize, weight: .bold, design: .monospaced))
+                .font(.system(size: isInfinity ? style.valueSize + 1.8 : style.valueSize,
+                              weight: .bold,
+                              design: isInfinity ? .rounded : .monospaced))
                 .foregroundStyle(color)
                 .lineLimit(1)
                 .minimumScaleFactor(0.8)
@@ -399,7 +445,7 @@ struct HeaderBar: View {
 // Unified double-click + right-click handler
 // ---------------------------------------------------------------------------
 struct ClickHandler: NSViewRepresentable {
-    let onDoubleClick: () -> Void
+    let onDoubleClick: (NSEvent) -> Void
     let onRightClick:  (NSEvent) -> Void
 
     func makeNSView(context: Context) -> ClickView {
@@ -412,10 +458,10 @@ struct ClickHandler: NSViewRepresentable {
 }
 
 class ClickView: NSView {
-    var onDoubleClick: () -> Void
+    var onDoubleClick: (NSEvent) -> Void
     var onRightClick:  (NSEvent) -> Void
 
-    init(onDoubleClick: @escaping () -> Void, onRightClick: @escaping (NSEvent) -> Void) {
+    init(onDoubleClick: @escaping (NSEvent) -> Void, onRightClick: @escaping (NSEvent) -> Void) {
         self.onDoubleClick = onDoubleClick
         self.onRightClick  = onRightClick
         super.init(frame: .zero)
@@ -423,7 +469,7 @@ class ClickView: NSView {
     required init?(coder: NSCoder) { fatalError() }
 
     override func mouseDown(with event: NSEvent) {
-        if event.clickCount == 2 { onDoubleClick() }
+        if event.clickCount == 2 { onDoubleClick(event) }
     }
     override func rightMouseDown(with event: NSEvent) {
         onRightClick(event)
@@ -438,6 +484,7 @@ final class ContextMenuActionTarget: NSObject {
     var onToggleAlwaysOnTop: (() -> Void)?
     var onToggleExpand: (() -> Void)?
     var onMinimize: (() -> Void)?
+    var onSetTintLevel: ((Int) -> Void)?
 
     @objc func handleReset(_ sender: Any?) {
         onReset?()
@@ -462,23 +509,35 @@ final class ContextMenuActionTarget: NSObject {
     @objc func handleMinimize(_ sender: Any?) {
         onMinimize?()
     }
+
+    @objc func handleSetTintLevel(_ sender: Any?) {
+        guard let item = sender as? NSMenuItem else { return }
+        onSetTintLevel?(item.tag)
+    }
 }
 
 // ---------------------------------------------------------------------------
 // Glass background
 // ---------------------------------------------------------------------------
 struct GlassBackground: View {
+    @EnvironmentObject var store: PingStore
+
     var body: some View {
+        let tint = tintOpacities(for: store.tintLevel)
+        let sheenOpacity = sheenOpacity(for: store.tintLevel)
+        let borderOpacity = borderOpacity(for: store.tintLevel)
+        let blurOpacity = blurOpacity(for: store.tintLevel)
         ZStack {
             VisualEffectBlur()
                 .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .opacity(blurOpacity)
 
             // Dark tinted overlay so content is always legible
             RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .fill(LinearGradient(
                     colors: [
-                        Color(red: 0.09, green: 0.10, blue: 0.16).opacity(0.49),
-                        Color(red: 0.06, green: 0.07, blue: 0.12).opacity(0.56),
+                        Color(red: 0.09, green: 0.10, blue: 0.16).opacity(tint.top),
+                        Color(red: 0.06, green: 0.07, blue: 0.12).opacity(tint.bottom),
                     ],
                     startPoint: .topLeading, endPoint: .bottomTrailing
                 ))
@@ -486,7 +545,7 @@ struct GlassBackground: View {
             // Gloss sheen on top edge
             RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .fill(LinearGradient(
-                    colors: [.white.opacity(0.05), .clear],
+                    colors: [.white.opacity(sheenOpacity), .clear],
                     startPoint: .top,
                     endPoint: .init(x: 0.5, y: 0.5)
                 ))
@@ -495,12 +554,56 @@ struct GlassBackground: View {
             RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .strokeBorder(
                     LinearGradient(
-                        colors: [.white.opacity(0.20), .white.opacity(0.04)],
+                        colors: [.white.opacity(borderOpacity), .white.opacity(borderOpacity * 0.2)],
                         startPoint: .topLeading,
                         endPoint: .bottomTrailing
                     ),
                     lineWidth: 0.8
                 )
+        }
+    }
+
+    private func tintOpacities(for level: Int) -> (top: Double, bottom: Double) {
+        switch level {
+        case 0: return (0.03, 0.05) // Very Light
+        case 1: return (0.18, 0.24) // Light
+        case 2: return (0.30, 0.38) // Balanced
+        case 3: return (0.42, 0.50) // Dark
+        case 4: return (0.56, 0.64) // Very Dark
+        default: return (0.49, 0.56)
+        }
+    }
+
+    private func sheenOpacity(for level: Int) -> Double {
+        switch level {
+        case 0: return 0.015
+        case 1: return 0.025
+        case 2: return 0.04
+        case 3: return 0.055
+        case 4: return 0.07
+        default: return 0.04
+        }
+    }
+
+    private func borderOpacity(for level: Int) -> Double {
+        switch level {
+        case 0: return 0.09
+        case 1: return 0.12
+        case 2: return 0.16
+        case 3: return 0.20
+        case 4: return 0.24
+        default: return 0.16
+        }
+    }
+
+    private func blurOpacity(for level: Int) -> Double {
+        switch level {
+        case 0: return 0.30 // Very Light
+        case 1: return 0.45 // Light
+        case 2: return 0.62 // Balanced
+        case 3: return 0.78 // Dark
+        case 4: return 0.92 // Very Dark
+        default: return 0.62
         }
     }
 }

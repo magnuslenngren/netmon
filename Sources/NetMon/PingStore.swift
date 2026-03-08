@@ -31,6 +31,19 @@ final class PingStore: ObservableObject {
     @Published var showTrafficGraph: Bool = true {
         didSet { save() }
     }
+    @Published var tintLevel: Int = 2 {
+        didSet {
+            if tintLevel < 0 {
+                tintLevel = 0
+                return
+            }
+            if tintLevel > 4 {
+                tintLevel = 4
+                return
+            }
+            save()
+        }
+    }
 
     private let defaultsKey = "netmon.config"
 
@@ -71,7 +84,8 @@ final class PingStore: ObservableObject {
             "pingInterval": pingInterval,
             "isCompact":    isCompact,
             "showLatencyGraph": showLatencyGraph,
-            "showTrafficGraph": showTrafficGraph
+            "showTrafficGraph": showTrafficGraph,
+            "tintLevel": tintLevel
         ]
         UserDefaults.standard.set(data, forKey: defaultsKey)
     }
@@ -87,5 +101,6 @@ final class PingStore: ObservableObject {
         isCompact    = data["isCompact"]    as? Bool   ?? false
         showLatencyGraph = data["showLatencyGraph"] as? Bool ?? true
         showTrafficGraph = data["showTrafficGraph"] as? Bool ?? true
+        tintLevel = data["tintLevel"] as? Int ?? 2
     }
 }

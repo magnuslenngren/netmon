@@ -3,6 +3,7 @@ import SwiftUI
 struct DisplayPingPoint {
     let timestamp: Date
     let latencyMs: Double
+    let isLoss: Bool
 }
 
 struct DisplaySeriesPoint {
@@ -16,7 +17,14 @@ func clipPointsToWindow(_ points: [DisplayPingPoint],
     let clipped = clipSeriesPoints(points.map { DisplaySeriesPoint(timestamp: $0.timestamp, value: $0.latencyMs) },
                                    now: now,
                                    windowSeconds: windowSeconds)
-    return clipped.map { DisplayPingPoint(timestamp: $0.timestamp, latencyMs: $0.value) }
+    return clipped.map { point in
+        let nearest = points.min {
+            abs($0.timestamp.timeIntervalSince(point.timestamp)) < abs($1.timestamp.timeIntervalSince(point.timestamp))
+        }
+        return DisplayPingPoint(timestamp: point.timestamp,
+                                latencyMs: point.value,
+                                isLoss: nearest?.isLoss ?? false)
+    }
 }
 
 func clipPointsToWindow(_ points: [DisplaySeriesPoint],
@@ -90,10 +98,6 @@ struct LatencyGraphView: View {
                 let graphSize = sz
 
                 ZStack(alignment: .topLeading) {
-                    if showLatency {
-                        GridLines(size: graphSize, minMs: range.min, maxMs: range.max)
-                    }
-
                     if showTraffic, let eng = primaryEngine {
                         let inPoints = displaySeriesPoints(from: eng.results, now: displayNow, value: \.bytesIn)
                         let outPoints = displaySeriesPoints(from: eng.results, now: displayNow, value: \.bytesOut)
@@ -155,7 +159,9 @@ struct LatencyGraphView: View {
                         ForEach(store.endpoints, id: \.id) { ep in
                             if let eng = store.engines[ep.id],
                                let latest = displayLatencyPoints(from: eng.results, now: displayNow).last {
-                                LiveDot(color: latencyColor(latest.latencyMs))
+                                LiveDot(color: latest.isLoss
+                                    ? Color(red: 1.0, green: 0.35, blue: 0.35)
+                                    : latencyColor(latest.latencyMs))
                                     .position(
                                         x: xPos(for: latest.timestamp, now: displayNow, width: graphSize.width),
                                         y: yFrac(latest.latencyMs, range) * sz.height
@@ -199,7 +205,7 @@ struct LatencyGraphView: View {
     func dynamicLatencyRange(now: Date) -> Range {
         let all = store.endpoints.flatMap {
             store.engines[$0.id]?.results.compactMap { result -> Double? in
-                guard let ms = result.latencyMs else { return nil }
+                let ms = result.latencyMs ?? 0
                 let age = now.timeIntervalSince(result.timestamp)
                 guard age >= 0, age <= graphWindowSeconds else { return nil }
                 return ms
@@ -243,10 +249,11 @@ struct LatencyGraphView: View {
     // popping the whole segment in on a single frame.
     func displayLatencyPoints(from results: [PingResult], now: Date) -> [DisplayPingPoint] {
         let vals = results.compactMap { result -> DisplayPingPoint? in
-            guard let ms = result.latencyMs else { return nil }
             let age = now.timeIntervalSince(result.timestamp)
             guard age >= 0 else { return nil }
-            return DisplayPingPoint(timestamp: result.timestamp, latencyMs: ms)
+            return DisplayPingPoint(timestamp: result.timestamp,
+                                    latencyMs: result.latencyMs ?? 0,
+                                    isLoss: result.latencyMs == nil)
         }
         guard vals.count >= 2 else { return vals }
 
@@ -264,10 +271,14 @@ struct LatencyGraphView: View {
                 next.timestamp.timeIntervalSince(prev.timestamp) * reveal
             )
             let ms = prev.latencyMs + (next.latencyMs - prev.latencyMs) * reveal
-            displayed[lastIdx] = DisplayPingPoint(timestamp: t, latencyMs: ms)
+            displayed[lastIdx] = DisplayPingPoint(timestamp: t,
+                                                  latencyMs: ms,
+                                                  isLoss: next.isLoss)
         }
         if let last = displayed.last, last.timestamp < now {
-            displayed.append(DisplayPingPoint(timestamp: now, latencyMs: last.latencyMs))
+            displayed.append(DisplayPingPoint(timestamp: now,
+                                             latencyMs: last.latencyMs,
+                                             isLoss: last.isLoss))
         }
         return displayed
     }
@@ -314,14 +325,6 @@ struct GridLines: View {
     var body: some View {
         let lines = tensValues().filter { $0 > minMs && $0 < maxMs }
         return ZStack {
-            Path { p in
-                p.move(to: CGPoint(x: 0, y: 0))
-                p.addLine(to: CGPoint(x: size.width, y: 0))
-                p.move(to: CGPoint(x: 0, y: size.height))
-                p.addLine(to: CGPoint(x: size.width, y: size.height))
-            }
-            .stroke(Color.white.opacity(0.15), lineWidth: 0.75)
-
             ForEach(lines, id: \.self) { ms in
                 let y = CGFloat(1 - (ms - minMs) / (maxMs - minMs)) * size.height
                 Path { p in
@@ -348,16 +351,19 @@ struct YLabels: View {
 
     var body: some View {
         let lines = displayValues()
+        let topValue = lines.max()
+        let bottomValue = lines.min()
         return ZStack(alignment: .topLeading) {
             ForEach(lines, id: \.self) { ms in
                 let y = CGFloat(1 - (ms - minMs) / (maxMs - minMs)) * size.height
-                let isTop = ms == lines.max()
+                let isTop = ms == topValue
+                let isBottom = ms == bottomValue
                 Text("\(Int(ms))")
                     .font(.system(size: 7.5,
                                   weight: isTop ? .semibold : .medium,
                                   design: .monospaced))
                     .foregroundStyle(Color.white.opacity(isTop ? 0.45 : 0.28))
-                    .offset(x: 3, y: y - 9)
+                    .offset(x: 3, y: isTop ? -2 : (isBottom ? size.height - 16 : y - 9))
             }
         }
     }
@@ -513,7 +519,7 @@ struct LineShape: View {
     let now:     Date
     let windowSeconds: TimeInterval
 
-    struct Pt { let point: CGPoint; let ms: Double }
+    struct Pt { let point: CGPoint; let ms: Double; let isLoss: Bool }
 
     var body: some View {
         let pts = validPoints()
@@ -524,7 +530,9 @@ struct LineShape: View {
                 ForEach(0 ..< pts.count - 1, id: \.self) { i in
                     let a = pts[i].point
                     let b = pts[i + 1].point
-                    let col = latencyColor((pts[i].ms + pts[i + 1].ms) * 0.5)
+                    let col = (pts[i].isLoss || pts[i + 1].isLoss)
+                        ? Color(red: 1.0, green: 0.35, blue: 0.35)
+                        : latencyColor((pts[i].ms + pts[i + 1].ms) * 0.5)
                     let c1 = CGPoint(x: a.x + (b.x - a.x) * 0.5, y: a.y)
                     let c2 = CGPoint(x: a.x + (b.x - a.x) * 0.5, y: b.y)
                     Path { p in
@@ -549,7 +557,7 @@ struct LineShape: View {
             return Pt(point: CGPoint(
                 x: size.width * CGFloat(frac),
                 y: CGFloat(1 - (min(max(point.latencyMs, minMs), maxMs) - minMs) / (maxMs - minMs)) * size.height
-            ), ms: point.latencyMs)
+            ), ms: point.latencyMs, isLoss: point.isLoss)
         }
     }
 

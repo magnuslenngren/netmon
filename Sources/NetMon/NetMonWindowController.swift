@@ -49,6 +49,7 @@ class NetMonWindowController: NSWindowController {
         }
         let frame = NSRectFromString(frameString)
         guard frame.width > 0, frame.height > 0 else { return false }
+        guard hasVisibleScreenIntersection(frame) else { return false }
         window.setFrame(frame, display: true)
         return true
     }
@@ -76,7 +77,7 @@ class NetMonWindowController: NSWindowController {
     }
 
     private func positionTopRight(_ window: NSWindow) {
-        let sv = primaryVisibleFrame()
+        let sv = currentOrPrimaryVisibleFrame(for: window)
         var frame = window.frame
         frame.origin.x = sv.maxX - frame.width - kWidgetPad
         frame.origin.y = sv.maxY - frame.height - kWidgetPad
@@ -93,6 +94,23 @@ func primaryVisibleFrame() -> NSRect {
     return screen.visibleFrame
 }
 
+func currentOrPrimaryVisibleFrame(for window: NSWindow) -> NSRect {
+    if let screen = window.screen {
+        return screen.visibleFrame
+    }
+    let current = window.frame
+    if let matching = NSScreen.screens.first(where: { $0.frame.intersects(current) }) {
+        return matching.visibleFrame
+    }
+    return primaryVisibleFrame()
+}
+
+func hasVisibleScreenIntersection(_ frame: NSRect) -> Bool {
+    NSScreen.screens.contains { screen in
+        screen.visibleFrame.intersects(frame)
+    }
+}
+
 func resetNetMonWindowView(window: NSWindow, isCompact: Bool) {
     UserDefaults.standard.removeObject(forKey: kWindowFrameDefaultsKey)
     UserDefaults.standard.removeObject(forKey: "netmon.lastExpandedHeight")
@@ -101,7 +119,7 @@ func resetNetMonWindowView(window: NSWindow, isCompact: Bool) {
     var frame = window.frame
     frame.size = NSSize(width: kWidgetWidth, height: targetHeight)
 
-    let sv = primaryVisibleFrame()
+    let sv = currentOrPrimaryVisibleFrame(for: window)
     // Snap fully to top-right of visible frame (just below menu bar clock/date area).
     frame.origin.x = sv.maxX - frame.width
     frame.origin.y = sv.maxY - frame.height

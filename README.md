@@ -11,26 +11,33 @@ A minimal macOS network monitor widget that lives in the top-right corner of you
   - latency (foreground) with segment-based color transitions
   - traffic bytes down/up (background) in mirrored blue series around a center baseline
   - smooth scrolling, interpolation and clipping at both edges
+  - clean chart area (no dashed grid overlay)
+  - packet loss samples drop to `0` and are highlighted in **red**
 - **Dual Y-axes**:
   - left axis for latency (10-step labeling, adaptive density)
   - right axis for bytes (adaptive labels and spacing for small sizes)
 - **Glass design** — semi-transparent widget with lightweight border
+- **Tint/Blur presets** — 5 levels from `Very Light` to `Very Dark`, persisted across restarts
 - **Window state persistence** — remembers size and position across restarts
 - **Always on top toggle** — can be changed at runtime from context menu
-- **Full-window interactions**:
-  - double-click anywhere to collapse/expand
+- **Area-aware double-click interactions**:
+  - title bar: `Minimize` / `Full`
+  - graph area: `Expand (x4)` / `Restore Size`
   - right-click anywhere for context menu
 - **Context menu controls**:
   - Always on Top
   - Minimize / Full
-  - Expand / Restore Size
+  - Expand (x4) / Restore Size
   - Reset View
+  - Tint/Blur
   - Show/Hide Latency Graph
   - Show/Hide Traffic Graph
 - **Keyboard shortcuts**:
   - `Cmd+E` Expand / Restore Size
   - `Cmd+M` Minimize / Full
   - `Cmd+R` Reset View
+- **Loss badge behavior**:
+  - Latency box shows red `∞` during packet loss
 - No Dock icon, no menu bar clutter
 
 ## Requirements
