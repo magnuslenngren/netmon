@@ -45,84 +45,223 @@ struct CodableColor: Codable, Equatable {
 }
 
 // ---------------------------------------------------------------------------
-// PingEngine — uses /sbin/ping (ICMP, no root needed via subprocess)
-// 1 packet, 56-byte payload (standard ping default), 1s timeout
+// ICMP helpers
+// ---------------------------------------------------------------------------
+private struct ICMPHeader {
+    var type: UInt8      // 8 = echo request, 0 = echo reply
+    var code: UInt8
+    var checksum: UInt16
+    var identifier: UInt16
+    var sequence: UInt16
+
+    static let echoRequest: UInt8 = 8
+    static let echoReply: UInt8   = 0
+    static let headerSize         = 8
+}
+
+private func internetChecksum(_ data: Data) -> UInt16 {
+    var sum: UInt32 = 0
+    let bytes = [UInt8](data)
+    var i = 0
+    while i + 1 < bytes.count {
+        sum += UInt32(bytes[i]) << 8 | UInt32(bytes[i + 1])
+        i += 2
+    }
+    if i < bytes.count {
+        sum += UInt32(bytes[i]) << 8
+    }
+    while sum >> 16 != 0 {
+        sum = (sum & 0xFFFF) + (sum >> 16)
+    }
+    return ~UInt16(sum & 0xFFFF)
+}
+
+// ---------------------------------------------------------------------------
+// PingEngine — raw ICMP socket (non-privileged SOCK_DGRAM, no root needed)
 // ---------------------------------------------------------------------------
 final class PingEngine {
     let endpoint: Endpoint
     private(set) var results: [PingResult] = []
     private let maxHistory = 60
-    private var timer: Timer?
+    private var timerSource: DispatchSourceTimer?
     private var lastIOSnapshot: IOSnapshot?
     var onUpdate: (() -> Void)?
 
+    private let queue = DispatchQueue(label: "netmon.ping", qos: .userInitiated)
+    private var sock: Int32 = -1
+    private let identifier: UInt16
+    private var sequenceNumber: UInt16 = 0
+    private var inFlight = false
+    private let timeoutSec: Double = 1.0
+    private var resolvedAddr: sockaddr_in?
+
     init(endpoint: Endpoint) {
         self.endpoint = endpoint
+        self.identifier = UInt16(truncatingIfNeeded: arc4random())
     }
 
     func start(interval: TimeInterval = 1.0) {
-        probe()
-        timer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
+        queue.async { [weak self] in
+            self?.resolveHost()
+            self?.openSocket()
+        }
+
+        let timer = DispatchSource.makeTimerSource(queue: queue)
+        timer.schedule(deadline: .now(), repeating: interval, leeway: .milliseconds(10))
+        timer.setEventHandler { [weak self] in
             self?.probe()
         }
+        timer.resume()
+        timerSource = timer
     }
 
     func stop() {
-        timer?.invalidate()
-        timer = nil
+        timerSource?.cancel()
+        timerSource = nil
+        queue.async { [weak self] in
+            guard let self, self.sock >= 0 else { return }
+            close(self.sock)
+            self.sock = -1
+        }
     }
 
-    // Spawn /sbin/ping -c 1 -W 1000 -s 56 <host>
-    // -c 1  : one packet
-    // -W 1000: 1 second timeout (milliseconds on macOS)
-    // -s 56 : 56-byte payload (standard, same as default ping)
+    // MARK: - Socket setup
+
+    private func resolveHost() {
+        let host = endpoint.host
+        var hints = addrinfo()
+        hints.ai_family = AF_INET
+        hints.ai_socktype = SOCK_DGRAM
+
+        var infoPtr: UnsafeMutablePointer<addrinfo>?
+        guard getaddrinfo(host, nil, &hints, &infoPtr) == 0, let info = infoPtr else { return }
+        defer { freeaddrinfo(info) }
+
+        if info.pointee.ai_family == AF_INET, info.pointee.ai_addrlen >= MemoryLayout<sockaddr_in>.size {
+            var addr = sockaddr_in()
+            memcpy(&addr, info.pointee.ai_addr, Int(info.pointee.ai_addrlen))
+            resolvedAddr = addr
+        }
+    }
+
+    private func openSocket() {
+        sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_ICMP)
+        if sock < 0 { return }
+
+        // Set receive timeout so recvfrom doesn't block forever
+        var tv = timeval(tv_sec: Int(timeoutSec), tv_usec: __darwin_suseconds_t((timeoutSec.truncatingRemainder(dividingBy: 1.0)) * 1_000_000))
+        setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
+    }
+
+    // MARK: - Probe
+
     private func probe() {
-        let host      = endpoint.host
-        let startTime = Date()
-        let process   = Process()
-        let pipe      = Pipe()
-
-        process.executableURL = URL(fileURLWithPath: "/sbin/ping")
-        process.arguments     = ["-c", "1", "-W", "1000", "-s", "56", host]
-        process.standardOutput = pipe
-        process.standardError  = pipe
-
-        process.terminationHandler = { [weak self] proc in
-            let data   = pipe.fileHandleForReading.readDataToEndOfFile()
-            let output = String(data: data, encoding: .utf8) ?? ""
-            let ms     = Self.parse(output: output, fallbackElapsed: Date().timeIntervalSince(startTime))
-            self?.record(PingResult(timestamp: startTime, latencyMs: ms, bytesIn: 0, bytesOut: 0))
+        guard !inFlight else { return }
+        guard sock >= 0, var dest = resolvedAddr else {
+            // Socket or DNS failed — try to recover
+            resolveHost()
+            if sock < 0 { openSocket() }
+            if sock < 0 || resolvedAddr == nil {
+                record(PingResult(timestamp: Date(), latencyMs: nil, bytesIn: 0, bytesOut: 0))
+                return
+            }
+            return
         }
 
-        do {
-            try process.run()
-        } catch {
-            record(PingResult(timestamp: startTime, latencyMs: nil, bytesIn: 0, bytesOut: 0))
-        }
-    }
+        inFlight = true
+        let seq = sequenceNumber
+        sequenceNumber &+= 1
 
-    // Parse "round-trip min/avg/max/stddev = 12.345/12.345/12.345/0.000 ms"
-    // or    "64 bytes from 1.1.1.1: icmp_seq=0 ttl=55 time=12.345 ms"
-    private static func parse(output: String, fallbackElapsed: TimeInterval) -> Double? {
-        // Try "time=X ms" first (single packet line)
-        if let range = output.range(of: #"time=(\d+\.?\d*)\s*ms"#,
-                                     options: .regularExpression) {
-            let match = output[range]
-            if let numRange = match.range(of: #"[\d\.]+"#, options: .regularExpression) {
-                return Double(match[numRange])
+        // Build ICMP echo request (8-byte header + 48-byte payload = 56 bytes standard)
+        let payloadSize = 48
+        var packet = Data(count: ICMPHeader.headerSize + payloadSize)
+        packet[0] = ICMPHeader.echoRequest
+        packet[1] = 0 // code
+        packet[2] = 0; packet[3] = 0 // checksum placeholder
+        packet[4] = UInt8(identifier >> 8); packet[5] = UInt8(identifier & 0xFF)
+        packet[6] = UInt8(seq >> 8); packet[7] = UInt8(seq & 0xFF)
+
+        // Fill payload with timestamp for identification
+        let now = Date()
+        var ts = now.timeIntervalSince1970
+        withUnsafeBytes(of: &ts) { buf in
+            let count = min(buf.count, payloadSize)
+            packet.replaceSubrange(ICMPHeader.headerSize ..< ICMPHeader.headerSize + count,
+                                   with: buf.prefix(count))
+        }
+
+        // Compute checksum
+        let cksum = internetChecksum(packet)
+        packet[2] = UInt8(cksum >> 8); packet[3] = UInt8(cksum & 0xFF)
+
+        // Send
+        let sent = packet.withUnsafeBytes { buf in
+            withUnsafeMutablePointer(to: &dest) { addrPtr in
+                addrPtr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sa in
+                    sendto(sock, buf.baseAddress, buf.count, 0, sa, socklen_t(MemoryLayout<sockaddr_in>.size))
+                }
             }
         }
-        // Try round-trip summary line
-        if let range = output.range(of: #"= [\d.]+/([\d.]+)/"#,
-                                     options: .regularExpression) {
-            let match = output[range]            // "= min/avg/"
-            let parts = match.dropFirst(2).split(separator: "/")
-            if parts.count >= 2, let avg = Double(parts[1]) {
-                return avg
+
+        guard sent > 0 else {
+            inFlight = false
+            record(PingResult(timestamp: now, latencyMs: nil, bytesIn: 0, bytesOut: 0))
+            return
+        }
+
+        // Receive reply
+        var recvBuf = [UInt8](repeating: 0, count: 256)
+        var fromAddr = sockaddr_in()
+        var fromLen = socklen_t(MemoryLayout<sockaddr_in>.size)
+
+        let recvTime: Date
+
+        // Loop to skip non-matching replies within the timeout window
+        let deadline = now.addingTimeInterval(timeoutSec)
+        while true {
+            let n = withUnsafeMutablePointer(to: &fromAddr) { addrPtr in
+                addrPtr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sa in
+                    recvfrom(sock, &recvBuf, recvBuf.count, 0, sa, &fromLen)
+                }
+            }
+            let t = Date()
+
+            if n < 0 {
+                // Timeout or error
+                inFlight = false
+                record(PingResult(timestamp: now, latencyMs: nil, bytesIn: 0, bytesOut: 0))
+                return
+            }
+
+            // Determine ICMP header offset — macOS may or may not include the IP header
+            var icmpOffset = 0
+            if n > 0 && (recvBuf[0] >> 4) == 4 {
+                // IPv4 header present; IHL field gives header length in 32-bit words
+                icmpOffset = Int(recvBuf[0] & 0x0F) * 4
+            }
+
+            if n >= icmpOffset + ICMPHeader.headerSize {
+                let replyType = recvBuf[icmpOffset]
+                let replyId = UInt16(recvBuf[icmpOffset + 4]) << 8 | UInt16(recvBuf[icmpOffset + 5])
+                let replySeq = UInt16(recvBuf[icmpOffset + 6]) << 8 | UInt16(recvBuf[icmpOffset + 7])
+
+                if replyType == ICMPHeader.echoReply && replyId == identifier && replySeq == seq {
+                    recvTime = t
+                    break
+                }
+            }
+
+            // Not our reply — check if we still have time
+            if Date() >= deadline {
+                inFlight = false
+                record(PingResult(timestamp: now, latencyMs: nil, bytesIn: 0, bytesOut: 0))
+                return
             }
         }
-        // Timeout / host unreachable
-        return nil
+
+        let latencyMs = recvTime.timeIntervalSince(now) * 1000.0
+        inFlight = false
+        record(PingResult(timestamp: now, latencyMs: latencyMs, bytesIn: 0, bytesOut: 0))
     }
 
     private func record(_ result: PingResult) {
