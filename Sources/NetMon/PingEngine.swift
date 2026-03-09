@@ -157,14 +157,17 @@ final class PingEngine {
 
     private func probe() {
         guard !inFlight else { return }
-        guard sock >= 0, var dest = resolvedAddr else {
-            // Socket or DNS failed — try to recover
+        if sock < 0 || resolvedAddr == nil {
+            // Socket or DNS failed — try to recover and continue this probe cycle.
             resolveHost()
             if sock < 0 { openSocket() }
             if sock < 0 || resolvedAddr == nil {
                 record(PingResult(timestamp: Date(), latencyMs: nil, bytesIn: 0, bytesOut: 0))
                 return
             }
+        }
+        guard var dest = resolvedAddr else {
+            record(PingResult(timestamp: Date(), latencyMs: nil, bytesIn: 0, bytesOut: 0))
             return
         }
 
@@ -219,6 +222,7 @@ final class PingEngine {
         // Loop to skip non-matching replies within the timeout window
         let deadline = now.addingTimeInterval(timeoutSec)
         while true {
+            fromLen = socklen_t(MemoryLayout<sockaddr_in>.size)
             let n = withUnsafeMutablePointer(to: &fromAddr) { addrPtr in
                 addrPtr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sa in
                     recvfrom(sock, &recvBuf, recvBuf.count, 0, sa, &fromLen)
@@ -244,8 +248,12 @@ final class PingEngine {
                 let replyType = recvBuf[icmpOffset]
                 let replyId = UInt16(recvBuf[icmpOffset + 4]) << 8 | UInt16(recvBuf[icmpOffset + 5])
                 let replySeq = UInt16(recvBuf[icmpOffset + 6]) << 8 | UInt16(recvBuf[icmpOffset + 7])
+                let replyMatchesDestination = fromAddr.sin_addr.s_addr == dest.sin_addr.s_addr
 
-                if replyType == ICMPHeader.echoReply && replyId == identifier && replySeq == seq {
+                if replyType == ICMPHeader.echoReply &&
+                    replyId == identifier &&
+                    replySeq == seq &&
+                    replyMatchesDestination {
                     recvTime = t
                     break
                 }
