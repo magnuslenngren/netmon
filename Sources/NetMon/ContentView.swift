@@ -22,8 +22,7 @@ struct ContentView: View {
                 if !store.isCompact {
                     LatencyGraphView()
                         .environmentObject(store)
-                        .padding(.leading, 8)
-                        .padding(.trailing, 2)
+                        .padding(.horizontal, 0)
                         .padding(.bottom, 7)
                         .transition(.opacity.combined(with: .move(edge: .top)))
                 }
@@ -101,6 +100,7 @@ struct ContentView: View {
                         ("Balanced", 2),
                         ("Dark", 3),
                         ("Very Dark", 4),
+                        ("Off", 5),
                     ]
                     for (name, level) in tintOptions {
                         let tintItem = NSMenuItem(title: name,
@@ -523,14 +523,17 @@ struct GlassBackground: View {
     @EnvironmentObject var store: PingStore
 
     var body: some View {
+        let effectOff = store.tintLevel == 5
         let tint = tintOpacities(for: store.tintLevel)
         let sheenOpacity = sheenOpacity(for: store.tintLevel)
         let borderOpacity = borderOpacity(for: store.tintLevel)
         let blurOpacity = blurOpacity(for: store.tintLevel)
         ZStack {
-            VisualEffectBlur()
-                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                .opacity(blurOpacity)
+            if !effectOff {
+                VisualEffectBlur()
+                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    .opacity(blurOpacity)
+            }
 
             // Dark tinted overlay so content is always legible
             RoundedRectangle(cornerRadius: 12, style: .continuous)
@@ -570,6 +573,7 @@ struct GlassBackground: View {
         case 2: return (0.30, 0.38) // Balanced
         case 3: return (0.42, 0.50) // Dark
         case 4: return (0.56, 0.64) // Very Dark
+        case 5: return (1.0, 1.0)   // Off
         default: return (0.49, 0.56)
         }
     }
@@ -581,6 +585,7 @@ struct GlassBackground: View {
         case 2: return 0.04
         case 3: return 0.055
         case 4: return 0.07
+        case 5: return 0.0
         default: return 0.04
         }
     }
@@ -592,6 +597,7 @@ struct GlassBackground: View {
         case 2: return 0.16
         case 3: return 0.20
         case 4: return 0.24
+        case 5: return 0.0
         default: return 0.16
         }
     }
@@ -603,6 +609,7 @@ struct GlassBackground: View {
         case 2: return 0.62 // Balanced
         case 3: return 0.78 // Dark
         case 4: return 0.92 // Very Dark
+        case 5: return 0.0  // Off
         default: return 0.62
         }
     }

@@ -15,7 +15,7 @@ A minimal macOS network monitor widget that lives in the top-right corner of you
   - left axis for latency (10-step labeling, adaptive density)
   - right axis for bytes (adaptive labels and spacing for small sizes)
 - **Glass design** — semi-transparent widget with lightweight border
-- **Tint/Blur presets** — 5 levels from `Very Light` to `Very Dark`, persisted across restarts
+- **Tint/Blur presets** — 6 levels (`Very Light` ... `Very Dark` + `Off`), persisted across restarts
 - **Window state persistence** — remembers size and position across restarts
 - **Always on top toggle** — can be changed at runtime from context menu
 - **Area-aware double-click interactions**:

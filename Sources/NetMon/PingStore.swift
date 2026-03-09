@@ -37,8 +37,8 @@ final class PingStore: ObservableObject {
                 tintLevel = 0
                 return
             }
-            if tintLevel > 4 {
-                tintLevel = 4
+            if tintLevel > 5 {
+                tintLevel = 5
                 return
             }
             save()
