@@ -132,6 +132,7 @@ struct LatencyGraphView: View {
     }
     @State private var displayedRange = Range(min: 0, max: 120)
     @State private var displayedBytesRange = Range(min: 0, max: 4_096)
+    @State private var lastScaleUpdateAt: Date?
 
     var body: some View {
         TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: false)) { timeline in
@@ -244,16 +245,12 @@ struct LatencyGraphView: View {
                 .onAppear {
                     displayedRange = targetRange
                     displayedBytesRange = targetBytesRange
+                    lastScaleUpdateAt = timeline.date
                 }
-                .onChange(of: targetRange) { _, newRange in
-                    withAnimation(.easeInOut(duration: max(store.pingInterval * 0.55, 0.20))) {
-                        displayedRange = newRange
-                    }
-                }
-                .onChange(of: targetBytesRange) { _, newRange in
-                    withAnimation(.easeInOut(duration: max(store.pingInterval * 0.55, 0.20))) {
-                        displayedBytesRange = newRange
-                    }
+                .onChange(of: timeline.date) { _, now in
+                    advanceDisplayedRanges(at: now,
+                                           latencyTarget: targetRange,
+                                           bytesTarget: targetBytesRange)
                 }
             }
         }
@@ -317,6 +314,71 @@ struct LatencyGraphView: View {
         results.map { result in
             DisplaySeriesPoint(timestamp: result.timestamp, value: result[keyPath: value])
         }
+    }
+
+    private func advanceDisplayedRanges(at now: Date,
+                                        latencyTarget: Range,
+                                        bytesTarget: Range) {
+        guard let lastUpdate = lastScaleUpdateAt else {
+            displayedRange = latencyTarget
+            displayedBytesRange = bytesTarget
+            lastScaleUpdateAt = now
+            return
+        }
+
+        lastScaleUpdateAt = now
+        let deltaTime = max(now.timeIntervalSince(lastUpdate), 0)
+        guard deltaTime > 0 else { return }
+
+        let nextLatencyRange = easedRange(from: displayedRange,
+                                          to: latencyTarget,
+                                          deltaTime: deltaTime,
+                                          response: max(store.pingInterval * 0.9, 0.35),
+                                          tolerance: 0.05)
+        let nextBytesRange = easedRange(from: displayedBytesRange,
+                                        to: bytesTarget,
+                                        deltaTime: deltaTime,
+                                        response: max(store.pingInterval * 1.1, 0.45),
+                                        tolerance: max(bytesTarget.max * 0.003, 1))
+
+        if nextLatencyRange != displayedRange {
+            displayedRange = nextLatencyRange
+        }
+        if nextBytesRange != displayedBytesRange {
+            displayedBytesRange = nextBytesRange
+        }
+    }
+
+    private func easedRange(from current: Range,
+                            to target: Range,
+                            deltaTime: TimeInterval,
+                            response: TimeInterval,
+                            tolerance: Double) -> Range {
+        let blend = smoothingBlend(deltaTime: deltaTime, response: response)
+        let nextMin = interpolatedValue(current.min, target.min, blend: blend, tolerance: tolerance)
+        let nextMax = interpolatedValue(current.max, target.max, blend: blend, tolerance: tolerance)
+        return normalizedRange(minValue: nextMin, maxValue: nextMax, fallback: target)
+    }
+
+    private func smoothingBlend(deltaTime: TimeInterval, response: TimeInterval) -> Double {
+        guard deltaTime > 0 else { return 0 }
+        return 1 - exp(-deltaTime / max(response, 0.001))
+    }
+
+    private func interpolatedValue(_ current: Double,
+                                   _ target: Double,
+                                   blend: Double,
+                                   tolerance: Double) -> Double {
+        let next = current + (target - current) * blend
+        return abs(next - target) <= tolerance ? target : next
+    }
+
+    private func normalizedRange(minValue: Double,
+                                 maxValue: Double,
+                                 fallback: Range) -> Range {
+        let safeMax = Swift.max(maxValue, minValue + 1)
+        let normalized = Range(min: minValue, max: safeMax)
+        return normalized.max.isFinite && normalized.min.isFinite ? normalized : fallback
     }
 }
 
