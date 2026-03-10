@@ -41,10 +41,34 @@ private func clipSeriesPoints(_ points: [DisplaySeriesPoint],
     let sorted = points.sorted { $0.timestamp < $1.timestamp }
     var clipped = sorted.filter { $0.timestamp >= boundary && $0.timestamp <= now }
 
-    // Pin the first visible value to the left boundary so the graph starts
-    // at the current value immediately instead of visually ramping in.
-    if let firstInside = clipped.first, firstInside.timestamp > boundary {
-        clipped.insert(DisplaySeriesPoint(timestamp: boundary, value: firstInside.value), at: 0)
+    if let firstInside = clipped.first,
+       let insideIdx = sorted.firstIndex(where: { $0.timestamp == firstInside.timestamp }),
+       insideIdx > 0 {
+        let before = sorted[insideIdx - 1]
+        let after = sorted[insideIdx]
+        if before.timestamp < boundary, after.timestamp > boundary {
+            let span = after.timestamp.timeIntervalSince(before.timestamp)
+            if span > 0 {
+                let ratio = boundary.timeIntervalSince(before.timestamp) / span
+                let v = before.value + (after.value - before.value) * ratio
+                clipped.insert(DisplaySeriesPoint(timestamp: boundary, value: v), at: 0)
+            }
+        }
+    }
+
+    if clipped.last?.timestamp != now,
+       let before = sorted.last(where: { $0.timestamp <= now }),
+       let beforeIdx = sorted.firstIndex(where: { $0.timestamp == before.timestamp }),
+       (beforeIdx + 1) < sorted.count {
+        let after = sorted[beforeIdx + 1]
+        if after.timestamp > now {
+            let span = after.timestamp.timeIntervalSince(before.timestamp)
+            if span > 0 {
+                let ratio = now.timeIntervalSince(before.timestamp) / span
+                let v = before.value + (after.value - before.value) * ratio
+                clipped.append(DisplaySeriesPoint(timestamp: now, value: v))
+            }
+        }
     }
 
     return clipped
@@ -65,13 +89,47 @@ func bytesOutColor() -> Color {
     Color(red: 0.16, green: 0.62, blue: 0.98)
 }
 
+private func plotXPosition(timestamp: Date,
+                           now: Date,
+                           width: CGFloat,
+                           windowSeconds: TimeInterval,
+                           rightInset: CGFloat) -> CGFloat {
+    let age = now.timeIntervalSince(timestamp)
+    let frac = max(0, min(1, 1 - age / windowSeconds))
+    let plotWidth = max(width - rightInset, 0)
+    return plotWidth * CGFloat(frac)
+}
+
+private func stableSplineControls(points: [CGPoint], index: Int) -> (CGPoint, CGPoint) {
+    let a = points[index]
+    let b = points[index + 1]
+    let prev = index > 0 ? points[index - 1] : a
+
+    // Backward-difference tangents keep historical segments stable:
+    // adding a future sample does not reshape already-drawn points.
+    let tangentA = CGPoint(x: (b.x - prev.x) * 0.5, y: (b.y - prev.y) * 0.5)
+    let tangentB = CGPoint(x: b.x - a.x, y: b.y - a.y)
+
+    let c1 = CGPoint(x: a.x + tangentA.x / 3.0, y: a.y + tangentA.y / 3.0)
+    let c2 = CGPoint(x: b.x - tangentB.x / 3.0, y: b.y - tangentB.y / 3.0)
+    return (c1, c2)
+}
+
 // ---------------------------------------------------------------------------
 // Main graph container
 // ---------------------------------------------------------------------------
 struct LatencyGraphView: View {
     @EnvironmentObject var store: PingStore
     private let graphWindowSeconds: TimeInterval = 60
-    private var displayLagSeconds: TimeInterval { max(store.pingInterval, 0.2) }
+    private let graphRightInset: CGFloat = 4
+    private var displayLagSeconds: TimeInterval {
+        let fallback = max(store.pingInterval, 0.2)
+        guard let results = primaryEngine?.results, results.count >= 2 else { return fallback }
+        let last = results[results.count - 1].timestamp
+        let prev = results[results.count - 2].timestamp
+        let actualGap = last.timeIntervalSince(prev)
+        return max(min(actualGap, fallback * 1.5), 0.2)
+    }
     @State private var displayedRange = Range(min: 0, max: 120)
     @State private var displayedBytesRange = Range(min: 0, max: 4_096)
 
@@ -99,6 +157,7 @@ struct LatencyGraphView: View {
                                       maxVal: bytesRange.max,
                                       now: displayNow,
                                       windowSeconds: graphWindowSeconds,
+                                      rightInset: graphRightInset,
                                       color: bytesInColor(),
                                       direction: .up)
                         ByteAreaShape(points: outPoints,
@@ -106,6 +165,7 @@ struct LatencyGraphView: View {
                                       maxVal: bytesRange.max,
                                       now: displayNow,
                                       windowSeconds: graphWindowSeconds,
+                                      rightInset: graphRightInset,
                                       color: bytesOutColor(),
                                       direction: .down)
                         ByteLineShape(points: inPoints,
@@ -113,6 +173,7 @@ struct LatencyGraphView: View {
                                       maxVal: bytesRange.max,
                                       now: displayNow,
                                       windowSeconds: graphWindowSeconds,
+                                      rightInset: graphRightInset,
                                       color: bytesInColor().opacity(0.88),
                                       direction: .up)
                         ByteLineShape(points: outPoints,
@@ -120,6 +181,7 @@ struct LatencyGraphView: View {
                                       maxVal: bytesRange.max,
                                       now: displayNow,
                                       windowSeconds: graphWindowSeconds,
+                                      rightInset: graphRightInset,
                                       color: bytesOutColor().opacity(0.78),
                                       direction: .down)
                     }
@@ -134,29 +196,40 @@ struct LatencyGraphView: View {
                                           minMs: range.min,
                                           maxMs: range.max,
                                           now: displayNow,
-                                          windowSeconds: graphWindowSeconds)
+                                          windowSeconds: graphWindowSeconds,
+                                          rightInset: graphRightInset)
                                 LineShape(results: eng.results,
                                           points: points,
                                           size: graphSize,
                                           minMs: range.min,
                                           maxMs: range.max,
                                           now: displayNow,
-                                          windowSeconds: graphWindowSeconds)
+                                          windowSeconds: graphWindowSeconds,
+                                          rightInset: graphRightInset)
                             }
                         }
                     }
 
                     if showLatency {
                         ForEach(store.endpoints, id: \.id) { ep in
-                            if let eng = store.engines[ep.id],
-                               let latest = displayLatencyPoints(from: eng.results, now: displayNow).last {
+                            if let eng = store.engines[ep.id] {
+                                let rawPoints = displayLatencyPoints(from: eng.results, now: displayNow)
+                                let visiblePoints = clipPointsToWindow(rawPoints,
+                                                                       now: displayNow,
+                                                                       windowSeconds: graphWindowSeconds)
+                                if visiblePoints.count >= 2, let latest = visiblePoints.last {
                                 LiveDot(color: latest.isLoss
                                     ? Color(red: 1.0, green: 0.35, blue: 0.35)
                                     : latencyColor(latest.latencyMs))
                                     .position(
-                                        x: xPos(for: latest.timestamp, now: latest.timestamp, width: graphSize.width),
+                                        x: plotXPosition(timestamp: latest.timestamp,
+                                                         now: displayNow,
+                                                         width: graphSize.width,
+                                                         windowSeconds: graphWindowSeconds,
+                                                         rightInset: graphRightInset),
                                         y: yFrac(latest.latencyMs, range) * sz.height
                                     )
+                                }
                             }
                         }
                     }
@@ -230,72 +303,20 @@ struct LatencyGraphView: View {
         CGFloat(1 - (min(max(ms, r.min), r.max) - r.min) / (r.max - r.min))
     }
 
-    func xPos(for timestamp: Date, now: Date, width: CGFloat) -> CGFloat {
-        let age = now.timeIntervalSince(timestamp)
-        let frac = max(0, min(1, 1 - age / graphWindowSeconds))
-        return width * CGFloat(frac)
-    }
-
-    // Smoothly reveals the newest segment over one sample interval instead of
-    // popping the whole segment in on a single frame.
     func displayLatencyPoints(from results: [PingResult], now: Date) -> [DisplayPingPoint] {
-        let vals = results.compactMap { result -> DisplayPingPoint? in
-            let age = now.timeIntervalSince(result.timestamp)
-            guard age >= 0 else { return nil }
-            return DisplayPingPoint(timestamp: result.timestamp,
-                                    latencyMs: result.latencyMs ?? 0,
-                                    isLoss: result.latencyMs == nil)
+        results.map { result in
+            DisplayPingPoint(timestamp: result.timestamp,
+                             latencyMs: result.latencyMs ?? 0,
+                             isLoss: result.latencyMs == nil)
         }
-        guard vals.count >= 2 else { return vals }
-
-        var displayed = vals
-        let lastIdx = displayed.count - 1
-        let prev = displayed[lastIdx - 1]
-        let next = displayed[lastIdx]
-
-        let sampleDuration = max(store.pingInterval,
-                                 next.timestamp.timeIntervalSince(prev.timestamp),
-                                 0.2)
-        let reveal = max(0, min(1, now.timeIntervalSince(next.timestamp) / sampleDuration))
-        if reveal < 1 {
-            let t = prev.timestamp.addingTimeInterval(
-                next.timestamp.timeIntervalSince(prev.timestamp) * reveal
-            )
-            let ms = prev.latencyMs + (next.latencyMs - prev.latencyMs) * reveal
-            displayed[lastIdx] = DisplayPingPoint(timestamp: t,
-                                                  latencyMs: ms,
-                                                  isLoss: next.isLoss)
-        }
-        return displayed
     }
 
     func displaySeriesPoints(from results: [PingResult],
                              now: Date,
                              value: KeyPath<PingResult, Double>) -> [DisplaySeriesPoint] {
-        let vals = results.compactMap { result -> DisplaySeriesPoint? in
-            let age = now.timeIntervalSince(result.timestamp)
-            guard age >= 0 else { return nil }
-            return DisplaySeriesPoint(timestamp: result.timestamp, value: result[keyPath: value])
+        results.map { result in
+            DisplaySeriesPoint(timestamp: result.timestamp, value: result[keyPath: value])
         }
-        guard vals.count >= 2 else { return vals }
-
-        var displayed = vals
-        let lastIdx = displayed.count - 1
-        let prev = displayed[lastIdx - 1]
-        let next = displayed[lastIdx]
-
-        let sampleDuration = max(store.pingInterval,
-                                 next.timestamp.timeIntervalSince(prev.timestamp),
-                                 0.2)
-        let reveal = max(0, min(1, now.timeIntervalSince(next.timestamp) / sampleDuration))
-        if reveal < 1 {
-            let t = prev.timestamp.addingTimeInterval(
-                next.timestamp.timeIntervalSince(prev.timestamp) * reveal
-            )
-            let v = prev.value + (next.value - prev.value) * reveal
-            displayed[lastIdx] = DisplaySeriesPoint(timestamp: t, value: v)
-        }
-        return displayed
     }
 }
 
@@ -442,6 +463,7 @@ struct AreaShape: View {
     let maxMs:   Double
     let now:     Date
     let windowSeconds: TimeInterval
+    let rightInset: CGFloat
 
     var body: some View {
         let pts      = validPoints()
@@ -467,13 +489,15 @@ struct AreaShape: View {
     struct Pt { let point: CGPoint; let ms: Double }
 
     func validPoints() -> [Pt] {
-        let plotNow = points.last?.timestamp ?? now
-        return clipPointsToWindow(points, now: plotNow, windowSeconds: windowSeconds).compactMap { point in
-            let age = plotNow.timeIntervalSince(point.timestamp)
+        return clipPointsToWindow(points, now: now, windowSeconds: windowSeconds).compactMap { point in
+            let age = now.timeIntervalSince(point.timestamp)
             guard age >= 0, age <= windowSeconds else { return nil }
-            let frac = 1 - age / windowSeconds
             return Pt(point: CGPoint(
-                x: size.width * CGFloat(frac),
+                x: plotXPosition(timestamp: point.timestamp,
+                                 now: now,
+                                 width: size.width,
+                                 windowSeconds: windowSeconds,
+                                 rightInset: rightInset),
                 y: CGFloat(1 - (min(max(point.latencyMs, minMs), maxMs) - minMs) / (maxMs - minMs)) * size.height
             ), ms: point.latencyMs)
         }
@@ -482,10 +506,8 @@ struct AreaShape: View {
     private func addSmoothSegments(_ path: inout Path, points: [CGPoint]) {
         guard points.count >= 2 else { return }
         for i in 0 ..< points.count - 1 {
-            let a = points[i]
             let b = points[i + 1]
-            let c1 = CGPoint(x: a.x + (b.x - a.x) * 0.5, y: a.y)
-            let c2 = CGPoint(x: a.x + (b.x - a.x) * 0.5, y: b.y)
+            let (c1, c2) = stableSplineControls(points: points, index: i)
             path.addCurve(to: b, control1: c1, control2: c2)
         }
     }
@@ -502,12 +524,14 @@ struct LineShape: View {
     let maxMs:   Double
     let now:     Date
     let windowSeconds: TimeInterval
+    let rightInset: CGFloat
 
     struct Pt { let point: CGPoint; let ms: Double; let isLoss: Bool }
 
     var body: some View {
         let pts = validPoints()
         guard pts.count >= 2 else { return AnyView(EmptyView()) }
+        let curvePoints = pts.map(\.point)
 
         return AnyView(
             ZStack {
@@ -517,8 +541,7 @@ struct LineShape: View {
                     let col = (pts[i].isLoss || pts[i + 1].isLoss)
                         ? Color(red: 1.0, green: 0.35, blue: 0.35)
                         : latencyColor((pts[i].ms + pts[i + 1].ms) * 0.5)
-                    let c1 = CGPoint(x: a.x + (b.x - a.x) * 0.5, y: a.y)
-                    let c2 = CGPoint(x: a.x + (b.x - a.x) * 0.5, y: b.y)
+                    let (c1, c2) = stableSplineControls(points: curvePoints, index: i)
                     Path { p in
                         p.move(to: a)
                         p.addCurve(to: b, control1: c1, control2: c2)
@@ -534,13 +557,15 @@ struct LineShape: View {
     }
 
     func validPoints() -> [Pt] {
-        let plotNow = points.last?.timestamp ?? now
-        return clipPointsToWindow(points, now: plotNow, windowSeconds: windowSeconds).compactMap { point in
-            let age = plotNow.timeIntervalSince(point.timestamp)
+        return clipPointsToWindow(points, now: now, windowSeconds: windowSeconds).compactMap { point in
+            let age = now.timeIntervalSince(point.timestamp)
             guard age >= 0, age <= windowSeconds else { return nil }
-            let frac = 1 - age / windowSeconds
             return Pt(point: CGPoint(
-                x: size.width * CGFloat(frac),
+                x: plotXPosition(timestamp: point.timestamp,
+                                 now: now,
+                                 width: size.width,
+                                 windowSeconds: windowSeconds,
+                                 rightInset: rightInset),
                 y: CGFloat(1 - (min(max(point.latencyMs, minMs), maxMs) - minMs) / (maxMs - minMs)) * size.height
             ), ms: point.latencyMs, isLoss: point.isLoss)
         }
@@ -562,6 +587,7 @@ struct ByteAreaShape: View {
     let maxVal: Double
     let now: Date
     let windowSeconds: TimeInterval
+    let rightInset: CGFloat
     let color: Color
     let direction: Direction
 
@@ -592,27 +618,30 @@ struct ByteAreaShape: View {
     }
 
     func validPoints() -> [Pt] {
-        let plotNow = points.last?.timestamp ?? now
-        return clipPointsToWindow(points, now: plotNow, windowSeconds: windowSeconds).compactMap { point in
-            let age = plotNow.timeIntervalSince(point.timestamp)
+        return clipPointsToWindow(points, now: now, windowSeconds: windowSeconds).compactMap { point in
+            let age = now.timeIntervalSince(point.timestamp)
             guard age >= 0, age <= windowSeconds else { return nil }
-            let frac = 1 - age / windowSeconds
             let half = size.height * 0.5
             let normalized = min(max(point.value, 0), maxVal) / max(maxVal, 1)
             let y = direction == .up
                 ? half - CGFloat(normalized) * half
                 : half + CGFloat(normalized) * half
-            return Pt(point: CGPoint(x: size.width * CGFloat(frac), y: y))
+            return Pt(point: CGPoint(
+                x: plotXPosition(timestamp: point.timestamp,
+                                 now: now,
+                                 width: size.width,
+                                 windowSeconds: windowSeconds,
+                                 rightInset: rightInset),
+                y: y
+            ))
         }
     }
 
     private func addSmoothSegments(_ path: inout Path, points: [CGPoint]) {
         guard points.count >= 2 else { return }
         for i in 0 ..< points.count - 1 {
-            let a = points[i]
             let b = points[i + 1]
-            let c1 = CGPoint(x: a.x + (b.x - a.x) * 0.5, y: a.y)
-            let c2 = CGPoint(x: a.x + (b.x - a.x) * 0.5, y: b.y)
+            let (c1, c2) = stableSplineControls(points: points, index: i)
             path.addCurve(to: b, control1: c1, control2: c2)
         }
     }
@@ -632,6 +661,7 @@ struct ByteLineShape: View {
     let maxVal: Double
     let now: Date
     let windowSeconds: TimeInterval
+    let rightInset: CGFloat
     let color: Color
     let direction: Direction
 
@@ -655,18 +685,20 @@ struct ByteLineShape: View {
     }
 
     func validPoints() -> [Pt] {
-        let plotNow = points.last?.timestamp ?? now
-        return clipPointsToWindow(points, now: plotNow, windowSeconds: windowSeconds).compactMap { point in
-            let age = plotNow.timeIntervalSince(point.timestamp)
+        return clipPointsToWindow(points, now: now, windowSeconds: windowSeconds).compactMap { point in
+            let age = now.timeIntervalSince(point.timestamp)
             guard age >= 0, age <= windowSeconds else { return nil }
-            let frac = 1 - age / windowSeconds
             let half = size.height * 0.5
             let normalized = min(max(point.value, 0), maxVal) / max(maxVal, 1)
             let y = direction == .up
                 ? half - CGFloat(normalized) * half
                 : half + CGFloat(normalized) * half
             return Pt(point: CGPoint(
-                x: size.width * CGFloat(frac),
+                x: plotXPosition(timestamp: point.timestamp,
+                                 now: now,
+                                 width: size.width,
+                                 windowSeconds: windowSeconds,
+                                 rightInset: rightInset),
                 y: y
             ))
         }
@@ -675,10 +707,8 @@ struct ByteLineShape: View {
     private func addSmoothSegments(_ path: inout Path, points: [CGPoint]) {
         guard points.count >= 2 else { return }
         for i in 0 ..< points.count - 1 {
-            let a = points[i]
             let b = points[i + 1]
-            let c1 = CGPoint(x: a.x + (b.x - a.x) * 0.5, y: a.y)
-            let c2 = CGPoint(x: a.x + (b.x - a.x) * 0.5, y: b.y)
+            let (c1, c2) = stableSplineControls(points: points, index: i)
             path.addCurve(to: b, control1: c1, control2: c2)
         }
     }
