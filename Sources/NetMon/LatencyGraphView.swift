@@ -115,6 +115,64 @@ private func stableSplineControls(points: [CGPoint], index: Int) -> (CGPoint, CG
     return (c1, c2)
 }
 
+private struct CubicBezierSegment {
+    let p0: CGPoint
+    let p1: CGPoint
+    let p2: CGPoint
+    let p3: CGPoint
+
+    func point(at t: CGFloat) -> CGPoint {
+        let mt = 1 - t
+        let mt2 = mt * mt
+        let t2 = t * t
+
+        return CGPoint(
+            x: (mt2 * mt * p0.x)
+                + (3 * mt2 * t * p1.x)
+                + (3 * mt * t2 * p2.x)
+                + (t2 * t * p3.x),
+            y: (mt2 * mt * p0.y)
+                + (3 * mt2 * t * p1.y)
+                + (3 * mt * t2 * p2.y)
+                + (t2 * t * p3.y)
+        )
+    }
+
+    func split(at t: CGFloat) -> (CubicBezierSegment, CubicBezierSegment) {
+        let p01 = interpolate(p0, p1, t: t)
+        let p12 = interpolate(p1, p2, t: t)
+        let p23 = interpolate(p2, p3, t: t)
+        let p012 = interpolate(p01, p12, t: t)
+        let p123 = interpolate(p12, p23, t: t)
+        let p0123 = interpolate(p012, p123, t: t)
+
+        return (
+            CubicBezierSegment(p0: p0, p1: p01, p2: p012, p3: p0123),
+            CubicBezierSegment(p0: p0123, p1: p123, p2: p23, p3: p3)
+        )
+    }
+
+    func trimmed(from start: CGFloat, to end: CGFloat) -> CubicBezierSegment {
+        if start <= 0, end >= 1 { return self }
+
+        let clampedStart = max(0, min(1, start))
+        let clampedEnd = max(clampedStart, min(1, end))
+        let (head, _) = split(at: clampedEnd)
+
+        guard clampedEnd > clampedStart else { return head }
+        if clampedStart <= 0 { return head }
+
+        let normalizedStart = clampedStart / clampedEnd
+        let (_, trimmed) = head.split(at: normalizedStart)
+        return trimmed
+    }
+
+    private func interpolate(_ a: CGPoint, _ b: CGPoint, t: CGFloat) -> CGPoint {
+        CGPoint(x: a.x + (b.x - a.x) * t,
+                y: a.y + (b.y - a.y) * t)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Main graph container
 // ---------------------------------------------------------------------------
@@ -576,7 +634,8 @@ struct AreaShape: View {
 }
 
 // ---------------------------------------------------------------------------
-// Line — each segment colored by the latency at that point
+// Line — split rendered spline segments at threshold crossings so brief spikes
+// can show green/yellow/red transitions within one peak.
 // ---------------------------------------------------------------------------
 struct LineShape: View {
     let results: [PingResult]
@@ -589,30 +648,29 @@ struct LineShape: View {
     let rightInset: CGFloat
 
     struct Pt { let point: CGPoint; let ms: Double; let isLoss: Bool }
+    private struct ColoredSegment { let curve: CubicBezierSegment; let color: Color }
 
     var body: some View {
         let pts = validPoints()
         guard pts.count >= 2 else { return AnyView(EmptyView()) }
         let curvePoints = pts.map(\.point)
+        let coloredSegments = coloredSegments(points: pts, curvePoints: curvePoints)
 
         return AnyView(
             ZStack {
-                ForEach(0 ..< pts.count - 1, id: \.self) { i in
-                    let a = pts[i].point
-                    let b = pts[i + 1].point
-                    let col = (pts[i].isLoss || pts[i + 1].isLoss)
-                        ? Color(red: 1.0, green: 0.35, blue: 0.35)
-                        : latencyColor((pts[i].ms + pts[i + 1].ms) * 0.5)
-                    let (c1, c2) = stableSplineControls(points: curvePoints, index: i)
+                ForEach(0 ..< coloredSegments.count, id: \.self) { i in
+                    let segment = coloredSegments[i]
                     Path { p in
-                        p.move(to: a)
-                        p.addCurve(to: b, control1: c1, control2: c2)
+                        p.move(to: segment.curve.p0)
+                        p.addCurve(to: segment.curve.p3,
+                                   control1: segment.curve.p1,
+                                   control2: segment.curve.p2)
                     }
-                    .stroke(col,
+                    .stroke(segment.color,
                             style: StrokeStyle(lineWidth: 2.1,
                                                lineCap: .round,
                                                lineJoin: .round))
-                    .shadow(color: col.opacity(0.58), radius: 3.5)
+                    .shadow(color: segment.color.opacity(0.58), radius: 3.5)
                 }
             }
         )
@@ -631,6 +689,121 @@ struct LineShape: View {
                 y: CGFloat(1 - (min(max(point.latencyMs, minMs), maxMs) - minMs) / (maxMs - minMs)) * size.height
             ), ms: point.latencyMs, isLoss: point.isLoss)
         }
+    }
+
+    private func coloredSegments(points: [Pt], curvePoints: [CGPoint]) -> [ColoredSegment] {
+        var segments: [ColoredSegment] = []
+
+        for i in 0 ..< points.count - 1 {
+            let start = points[i]
+            let end = points[i + 1]
+            let (c1, c2) = stableSplineControls(points: curvePoints, index: i)
+            let curve = CubicBezierSegment(p0: start.point, p1: c1, p2: c2, p3: end.point)
+
+            if start.isLoss || end.isLoss {
+                segments.append(ColoredSegment(curve: curve,
+                                               color: Color(red: 1.0, green: 0.35, blue: 0.35)))
+                continue
+            }
+
+            let breakpoints = thresholdBreakpoints(for: curve)
+            for index in 0 ..< breakpoints.count - 1 {
+                let startT = breakpoints[index]
+                let endT = breakpoints[index + 1]
+                guard endT - startT > 0.0001 else { continue }
+
+                let midpoint = curve.point(at: (startT + endT) * 0.5)
+                let ms = latencyMs(forY: midpoint.y)
+                segments.append(ColoredSegment(curve: curve.trimmed(from: startT, to: endT),
+                                               color: latencyColor(ms)))
+            }
+        }
+
+        return segments
+    }
+
+    private func thresholdBreakpoints(for curve: CubicBezierSegment) -> [CGFloat] {
+        let thresholds = [50.0, 100.0]
+        let values = ([CGFloat(0), CGFloat(1)] + thresholds.flatMap { thresholdCrossings(for: curve, thresholdMs: $0) })
+            .sorted()
+
+        var unique: [CGFloat] = []
+        for value in values {
+            if let last = unique.last, abs(last - value) < 0.0005 { continue }
+            unique.append(value)
+        }
+        return unique
+    }
+
+    private func thresholdCrossings(for curve: CubicBezierSegment, thresholdMs: Double) -> [CGFloat] {
+        guard thresholdMs > minMs, thresholdMs < maxMs else { return [] }
+
+        let targetY = yPosition(for: thresholdMs)
+        let sampleCount = 32
+        let epsilon: CGFloat = 0.0001
+        var crossings: [CGFloat] = []
+        var previousT: CGFloat = 0
+        var previousValue = curve.point(at: previousT).y - targetY
+
+        for sample in 1 ... sampleCount {
+            let t = CGFloat(sample) / CGFloat(sampleCount)
+            let value = curve.point(at: t).y - targetY
+
+            if abs(value) < epsilon {
+                crossings.append(t)
+            }
+
+            if (previousValue < 0 && value > 0) || (previousValue > 0 && value < 0) {
+                crossings.append(refineCrossing(for: curve,
+                                                targetY: targetY,
+                                                lowT: previousT,
+                                                highT: t))
+            }
+
+            previousT = t
+            previousValue = value
+        }
+
+        return crossings
+    }
+
+    private func refineCrossing(for curve: CubicBezierSegment,
+                                targetY: CGFloat,
+                                lowT: CGFloat,
+                                highT: CGFloat) -> CGFloat {
+        var lower = lowT
+        var upper = highT
+        var lowerValue = curve.point(at: lower).y - targetY
+
+        for _ in 0 ..< 14 {
+            let midpoint = (lower + upper) * 0.5
+            let value = curve.point(at: midpoint).y - targetY
+
+            if abs(value) < 0.0001 {
+                return midpoint
+            }
+
+            if (lowerValue < 0 && value > 0) || (lowerValue > 0 && value < 0) {
+                upper = midpoint
+            } else {
+                lower = midpoint
+                lowerValue = value
+            }
+        }
+
+        return (lower + upper) * 0.5
+    }
+
+    private func yPosition(for ms: Double) -> CGFloat {
+        let clamped = min(max(ms, minMs), maxMs)
+        let range = max(maxMs - minMs, 0.0001)
+        return CGFloat(1 - (clamped - minMs) / range) * size.height
+    }
+
+    private func latencyMs(forY y: CGFloat) -> Double {
+        let range = max(maxMs - minMs, 0.0001)
+        let normalized = min(max(1 - (y / max(size.height, 0.0001)), 0), 1)
+        return minMs + Double(normalized) * range
     }
 
 }
