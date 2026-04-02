@@ -30,7 +30,6 @@ struct ContentView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .animation(.spring(response: 0.3, dampingFraction: 0.8), value: store.isCompact)
         .onAppear { updateWindowTitle() }
         .onChange(of: store.endpoints) { _, _ in updateWindowTitle() }
         .onReceive(NotificationCenter.default.publisher(for: .netMonToggleExpand)) { _ in
@@ -192,23 +191,17 @@ struct ContentView: View {
         var f = window.frame
         f.origin.y = f.origin.y + f.height - newH // keep top edge fixed
         f.size.height = newH
-        NSAnimationContext.runAnimationGroup { ctx in
-            ctx.duration = 0.28
-            ctx.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-            window.animator().setFrame(f, display: true)
-        }
+        // Avoid animating the SwiftUI content insertion/removal and the AppKit window
+        // frame change at the same time; that was tripping AppKit's constraint pass limit.
+        window.setFrame(f, display: true, animate: false)
     }
 
     private func toggleCompactMode() {
         if store.isCompact {
-            withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
-                store.isCompact = false
-            }
+            store.isCompact = false
             resizeWindow(compact: false)
         } else {
-            withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
-                store.isCompact = true
-            }
+            store.isCompact = true
             resizeWindow(compact: true)
         }
     }
