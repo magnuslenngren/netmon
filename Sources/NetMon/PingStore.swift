@@ -44,13 +44,23 @@ final class PingStore: ObservableObject {
             save()
         }
     }
+    @Published private(set) var networkStatus: NetworkStatus = .unavailable
 
     private let defaultsKey = "netmon.config"
+    private var networkStatusTimer: Timer?
 
     init() {
         load()
         endpoints = [Self.forcedEndpoint]
         restart()
+        refreshNetworkStatus()
+        networkStatusTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+            self?.refreshNetworkStatus()
+        }
+    }
+
+    deinit {
+        networkStatusTimer?.invalidate()
     }
 
     // MARK: – Engine lifecycle
@@ -67,6 +77,13 @@ final class PingStore: ObservableObject {
 
     func results(for id: UUID) -> [PingResult] {
         engines[id]?.results ?? []
+    }
+
+    private func refreshNetworkStatus() {
+        let latest = NetworkStatus.current()
+        if latest != networkStatus {
+            networkStatus = latest
+        }
     }
 
     // MARK: – Window level

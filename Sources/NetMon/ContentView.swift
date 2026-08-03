@@ -43,6 +43,15 @@ struct ContentView: View {
         }
         .overlay(
             ClickHandler(
+                networkHelpText: store.networkStatus.helpText,
+                onNetworkClick: {
+                    guard let address = store.networkStatus.ipv4Address else {
+                        NSSound.beep()
+                        return
+                    }
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(address, forType: .string)
+                },
                 onDoubleClick: { event in
                     handleDoubleClick(event)
                 },
@@ -265,6 +274,9 @@ struct HeaderBar: View {
                           color: latencyBoxColor,
                           style: style)
 
+                networkStatusIndicator(showAddress: geo.size.width >= 400, style: style)
+                    .padding(.leading, geo.size.width < 200 ? 2 : 4)
+
                 Spacer(minLength: style.showCenterTitle ? 8 : 2)
 
                 if style.showCenterTitle {
@@ -353,7 +365,7 @@ struct HeaderBar: View {
                                showCenterTitle: false,
                                labelSize: 7,
                                valueSize: compact ? 9.8 : 8.8,
-                               horizontalPadding: compact ? 9 : 7,
+                               horizontalPadding: 4,
                                verticalPadding: compact ? 2.2 : 1.5,
                                spacing: compact ? 3 : 5)
         }
@@ -399,6 +411,35 @@ struct HeaderBar: View {
         .overlay(Capsule().strokeBorder(color.opacity(0.30), lineWidth: 0.5))
     }
 
+    private func networkStatusIndicator(showAddress: Bool, style: HeaderStyle) -> some View {
+        let status = store.networkStatus
+        let color: Color = switch status.addressSource {
+        case .dhcp: .green
+        case .manual: .orange
+        case .unavailable: Color(red: 1.0, green: 0.35, blue: 0.35)
+        }
+
+        return HStack(spacing: 3) {
+            Image(systemName: status.symbolName)
+                .font(.system(size: style.valueSize - 1.2, weight: .semibold))
+            if showAddress, let address = status.ipv4Address {
+                Text(address)
+                    .font(.system(size: style.valueSize - 1.4,
+                                  weight: .semibold,
+                                  design: .monospaced))
+                    .lineLimit(1)
+            }
+        }
+        .foregroundStyle(color)
+        .padding(.horizontal, showAddress ? 6 : 3)
+        .padding(.vertical, style.verticalPadding + 0.4)
+        .background(color.opacity(0.15))
+        .clipShape(Capsule())
+        .overlay(Capsule().strokeBorder(color.opacity(0.30), lineWidth: 0.5))
+        .help(status.helpText)
+        .accessibilityLabel(status.helpText.replacingOccurrences(of: "\n", with: ", "))
+    }
+
     private func latencyLabel(for mode: HeaderStyle.LabelMode) -> String {
         switch mode {
         case .none: return ""
@@ -438,31 +479,103 @@ struct HeaderBar: View {
 // Unified double-click + right-click handler
 // ---------------------------------------------------------------------------
 struct ClickHandler: NSViewRepresentable {
+    let networkHelpText: String
+    let onNetworkClick: () -> Void
     let onDoubleClick: (NSEvent) -> Void
     let onRightClick:  (NSEvent) -> Void
 
     func makeNSView(context: Context) -> ClickView {
-        ClickView(onDoubleClick: onDoubleClick, onRightClick: onRightClick)
+        ClickView(networkHelpText: networkHelpText,
+                  onNetworkClick: onNetworkClick,
+                  onDoubleClick: onDoubleClick,
+                  onRightClick: onRightClick)
     }
     func updateNSView(_ v: ClickView, context: Context) {
+        v.networkHelpText = networkHelpText
+        v.onNetworkClick = onNetworkClick
         v.onDoubleClick = onDoubleClick
         v.onRightClick  = onRightClick
     }
 }
 
-class ClickView: NSView {
+class ClickView: NSView, NSViewToolTipOwner {
+    var networkHelpText: String
+    var onNetworkClick: () -> Void
     var onDoubleClick: (NSEvent) -> Void
     var onRightClick:  (NSEvent) -> Void
+    private var networkToolTipTag: NSView.ToolTipTag?
 
-    init(onDoubleClick: @escaping (NSEvent) -> Void, onRightClick: @escaping (NSEvent) -> Void) {
+    init(networkHelpText: String,
+         onNetworkClick: @escaping () -> Void,
+         onDoubleClick: @escaping (NSEvent) -> Void,
+         onRightClick: @escaping (NSEvent) -> Void) {
+        self.networkHelpText = networkHelpText
+        self.onNetworkClick = onNetworkClick
         self.onDoubleClick = onDoubleClick
         self.onRightClick  = onRightClick
         super.init(frame: .zero)
     }
     required init?(coder: NSCoder) { fatalError() }
 
+    override func layout() {
+        super.layout()
+        updateNetworkToolTipRect()
+    }
+
+    private func updateNetworkToolTipRect() {
+        if let tag = networkToolTipTag {
+            removeToolTip(tag)
+            networkToolTipTag = nil
+        }
+        guard bounds.width > 8, bounds.height > 0 else { return }
+        let headerHeight = min(bounds.height, 40)
+        let indicatorWidth: CGFloat = bounds.width >= 400 ? 205 : 78
+        let rect = NSRect(x: 8,
+                          y: bounds.maxY - headerHeight,
+                          width: min(indicatorWidth, bounds.width - 8),
+                          height: headerHeight)
+        networkToolTipTag = addToolTip(rect, owner: self, userData: nil)
+    }
+
+    func view(_ view: NSView,
+              stringForToolTip tag: NSView.ToolTipTag,
+              point: NSPoint,
+              userData data: UnsafeMutableRawPointer?) -> String {
+        networkHelpText
+    }
+
+    private var networkIndicatorClickRect: NSRect {
+        let headerHeight = min(bounds.height, 40)
+        let x: CGFloat
+        let width: CGFloat
+        if bounds.width >= 400 {
+            x = 64
+            width = 150
+        } else if bounds.width >= 275 {
+            x = 58
+            width = 48
+        } else if bounds.width >= 200 {
+            x = 42
+            width = 45
+        } else {
+            x = 22
+            width = 58
+        }
+        return NSRect(x: x,
+                      y: bounds.maxY - headerHeight,
+                      width: width,
+                      height: headerHeight)
+    }
+
     override func mouseDown(with event: NSEvent) {
-        if event.clickCount == 2 { onDoubleClick(event) }
+        if event.clickCount == 2 {
+            onDoubleClick(event)
+        } else if event.clickCount == 1 {
+            let point = convert(event.locationInWindow, from: nil)
+            if networkIndicatorClickRect.contains(point) {
+                onNetworkClick()
+            }
+        }
     }
     override func rightMouseDown(with event: NSEvent) {
         onRightClick(event)
