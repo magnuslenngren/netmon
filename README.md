@@ -66,10 +66,28 @@ A minimal macOS network monitor widget that lives in the top-right corner of you
 git clone https://github.com/magnuslenngren/netmon
 cd netmon
 swift build
+mkdir -p NetMon.app/Contents/MacOS
 cp .build/debug/NetMon NetMon.app/Contents/MacOS/NetMon
 ditto NetMon.app /Applications/NetMon.app
 open /Applications/NetMon.app
 ```
+
+If Swift Package Manager itself fails to start, a dependency-free, optimized
+native build is also available:
+
+```bash
+zsh scripts/build-native.sh
+ditto NetMon.app /Applications/NetMon.app
+open /Applications/NetMon.app
+```
+
+This uses the Command Line Tools' selected SDK and ad-hoc signs the app for
+local use. Set `SDKROOT` to override the SDK path if needed. It does not repair
+a mismatched Command Line Tools installation.
+
+Run the graph history regression checks with `zsh scripts/test-history.sh`.
+These verify left-edge interpolation and bounded history across sample rates,
+timing jitter, packet loss, and long gaps without network access.
 
 ## Install From Release (No Xcode Needed)
 

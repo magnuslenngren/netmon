@@ -82,7 +82,7 @@ private func internetChecksum(_ data: Data) -> UInt16 {
 final class PingEngine {
     let endpoint: Endpoint
     private(set) var results: [PingResult] = []
-    private let maxHistory = 60
+    private var sampleInterval: TimeInterval = 1
     private var timerSource: DispatchSourceTimer?
     private var lastIOSnapshot: IOSnapshot?
     var onUpdate: (() -> Void)?
@@ -101,6 +101,7 @@ final class PingEngine {
     }
 
     func start(interval: TimeInterval = 1.0) {
+        sampleInterval = interval
         queue.async { [weak self] in
             self?.resolveHost()
             self?.openSocket()
@@ -284,9 +285,7 @@ final class PingEngine {
                                       bytesIn: Double(delta.inBytes),
                                       bytesOut: Double(delta.outBytes))
             self.results.append(enriched)
-            if self.results.count > self.maxHistory {
-                self.results.removeFirst(self.results.count - self.maxHistory)
-            }
+            GraphHistory.prune(&self.results, interval: self.sampleInterval)
             self.onUpdate?()
         }
     }

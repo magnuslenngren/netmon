@@ -178,7 +178,7 @@ private struct CubicBezierSegment {
 // ---------------------------------------------------------------------------
 struct LatencyGraphView: View {
     @EnvironmentObject var store: PingStore
-    private let graphWindowSeconds: TimeInterval = 60
+    private let graphWindowSeconds = GraphHistory.windowSeconds
     private let graphRightInset: CGFloat = 4
     private var displayLagSeconds: TimeInterval {
         let fallback = max(store.pingInterval, 0.2)
@@ -186,7 +186,7 @@ struct LatencyGraphView: View {
         let last = results[results.count - 1].timestamp
         let prev = results[results.count - 2].timestamp
         let actualGap = last.timeIntervalSince(prev)
-        return max(min(actualGap, fallback * 1.5), 0.2)
+        return max(min(actualGap, GraphHistory.maximumDisplayLag(interval: store.pingInterval)), 0.2)
     }
     @State private var displayedRange = Range(min: 0, max: 120)
     @State private var displayedBytesRange = Range(min: 0, max: 4_096)

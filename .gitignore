@@ -5,6 +5,7 @@ dist/
 *.dia
 NetMon.iconset/
 NetMon.app/Contents/MacOS/NetMon
+NetMon.app/Contents/_CodeSignature/
 make_icon.swift
 NetMon.app/Contents/Resources/AppIcon.icns
 .DS_Store

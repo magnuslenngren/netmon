@@ -82,7 +82,7 @@ If changing key names, provide migration logic or preserve backward compatibilit
 - Ping command: `/sbin/ping -c 1 -W 1000 -s 56 <host>`.
 - Byte throughput is derived from delta of aggregate non-loopback `AF_LINK` counters.
 - First sample after launch/restart can show near-zero byte deltas due to baseline snapshot initialization.
-- History length is capped (`maxHistory = 60`); keep this consistent with graph window assumptions unless intentionally changing time horizon.
+- History is pruned by time using `GraphHistory`: retain the 60s graph window, maximum display lag, and one sample before the boundary for interpolation. Do not replace this with a 60-sample cap; that discards visible segments at a 1s cadence.
 
 ## Agent Workflow Tips
 - For iterative app testing, prefer `./run-netmon.sh` (rebuilds, copies to `/Applications`, relaunches).
