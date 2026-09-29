@@ -17,7 +17,7 @@ class NetMonWindowController: NSWindowController {
 
     let store = PingStore()
 
-    convenience init() {
+    convenience init(showOnLaunch: Bool = true) {
         let window = GlassWindow(width: kWidgetWidth, height: kWidgetHeight)
         self.init(window: window)
         window.delegate = self
@@ -40,6 +40,26 @@ class NetMonWindowController: NSWindowController {
         if store.isCompact {
             applyCompactHeight(window)
         }
+        if showOnLaunch { window.makeKeyAndOrderFront(nil) }
+    }
+
+    func toggleFromMenuBar(_ button: NSStatusBarButton) {
+        guard let window, let buttonWindow = button.window else { return }
+        if window.isVisible {
+            window.orderOut(nil)
+            return
+        }
+
+        let anchor = buttonWindow.convertToScreen(button.convert(button.bounds, to: nil))
+        let visible = buttonWindow.screen?.visibleFrame ?? primaryVisibleFrame()
+        var frame = window.frame
+        frame.size.width = min(frame.width, visible.width)
+        frame.size.height = min(frame.height, visible.height)
+        frame.origin.x = min(max(anchor.midX - frame.width / 2, visible.minX),
+                             visible.maxX - frame.width)
+        frame.origin.y = max(visible.minY, min(anchor.minY - 6, visible.maxY) - frame.height)
+        window.setFrame(frame, display: true)
+        window.level = store.alwaysOnTop ? .floating : .normal
         window.makeKeyAndOrderFront(nil)
     }
 

@@ -6,6 +6,7 @@ import AppKit
 // ---------------------------------------------------------------------------
 struct ContentView: View {
     @EnvironmentObject var store: PingStore
+    @AppStorage("netmon.menuBarMode") private var menuBarMode = true
     @AppStorage("netmon.lastExpandedHeight") private var lastExpandedHeight: Double = kWidgetHeight
     @AppStorage("netmon.isExpandedWindow") private var isExpandedWindow: Bool = false
     @AppStorage("netmon.preExpandFrame") private var preExpandFrame: String = ""
@@ -66,6 +67,12 @@ struct ContentView: View {
                     target.onSetTintLevel = { level in store.tintLevel = level }
 
                     // View options section
+                    let menuBarItem = NSMenuItem(title: menuBarMode ? "Remove Menu Bar" : "Switch to Menu Bar",
+                                                 action: #selector(ContextMenuActionTarget.handleUseMenuBar(_:)),
+                                                 keyEquivalent: "")
+                    menuBarItem.target = target
+                    menu.addItem(menuBarItem)
+                    menu.addItem(.separator())
                     let alwaysOnTopItem = NSMenuItem(title: "Always on Top",
                                                      action: #selector(ContextMenuActionTarget.handleToggleAlwaysOnTop(_:)),
                                                      keyEquivalent: "")
@@ -583,6 +590,9 @@ class ClickView: NSView, NSViewToolTipOwner {
 }
 
 final class ContextMenuActionTarget: NSObject {
+    @objc func handleUseMenuBar(_ sender: Any?) {
+        NotificationCenter.default.post(name: .netMonToggleMenuBar, object: nil)
+    }
     static let shared = ContextMenuActionTarget()
     var onReset: (() -> Void)?
     var onToggleLatency: (() -> Void)?

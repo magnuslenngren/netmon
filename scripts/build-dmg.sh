@@ -18,9 +18,12 @@ mkdir -p "${DIST_DIR}"
 rm -rf "${STAGE_DIR}" "${DMG_PATH}"
 mkdir -p "${STAGE_DIR}"
 
-swift build
-cp -f .build/debug/NetMon "${APP_NAME}/Contents/MacOS/NetMon"
+zsh scripts/build-native.sh >&2
 cp -R "${APP_NAME}" "${STAGE_DIR}/"
+/usr/libexec/PlistBuddy -c "Set :CFBundleVersion ${VERSION}" "${STAGE_DIR}/${APP_NAME}/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString ${VERSION}" "${STAGE_DIR}/${APP_NAME}/Contents/Info.plist"
+codesign --force --sign - "${STAGE_DIR}/${APP_NAME}" >&2
+codesign --verify --strict "${STAGE_DIR}/${APP_NAME}"
 ln -s /Applications "${STAGE_DIR}/Applications"
 
 hdiutil create \
