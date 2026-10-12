@@ -85,7 +85,8 @@ If changing key names, provide migration logic or preserve backward compatibilit
 - History is pruned by time using `GraphHistory`: retain the 60s graph window, maximum display lag, and one sample before the boundary for interpolation. Do not replace this with a 60-sample cap; that discards visible segments at a 1s cadence.
 
 ## Agent Workflow Tips
-- For iterative app testing, prefer `./run-netmon.sh` (rebuilds, copies to `/Applications`, relaunches).
+- After every app change, build, install to `/Applications/NetMon.app`, and restart the installed app locally. Verify the installed binary matches the build and test changed interactions in the running app.
+- For iterative app testing, prefer `./run-netmon.sh` (rebuilds, copies to `/Applications`, relaunches); use `zsh scripts/build-native.sh` followed by installation/relaunch if SwiftPM has SDK issues.
 - If a UI behavior appears stale, verify the binary actually running is `/Applications/NetMon.app/Contents/MacOS/NetMon`.
 - After modifying README screenshot layout, keep image+caption pairs grouped (HTML blocks are currently used for reliable sizing/caption positioning on GitHub).
 

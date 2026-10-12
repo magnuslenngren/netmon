@@ -49,7 +49,7 @@ final class MenuBarController: NSObject {
             .font: NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium),
             .foregroundColor: color
         ])
-        button.toolTip = "NetMon · \(title)\n\(store.networkStatus.helpText)"
+        button.toolTip = "NetMon · \(title)"
         button.setAccessibilityLabel("NetMon ping latency, \(title)")
     }
 

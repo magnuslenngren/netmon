@@ -67,9 +67,9 @@ struct NetworkStatus: Equatable {
             ?? transportName
         switch (addressSource, ipv4Address) {
         case (.dhcp, let address?):
-            return "Active: \(interfaceDescription)\nDHCP: \(address)\nClick to copy address"
+            return "Active: \(interfaceDescription)\nDHCP: \(address)"
         case (.manual, let address?):
-            return "Active: \(interfaceDescription)\nManual IPv4: \(address)\nClick to copy address"
+            return "Active: \(interfaceDescription)\nManual IPv4: \(address)"
         default:
             return "\(interfaceDescription)\nNo IPv4 address acquired"
         }

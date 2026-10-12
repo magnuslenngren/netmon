@@ -11,13 +11,18 @@ struct ContentView: View {
     @AppStorage("netmon.isExpandedWindow") private var isExpandedWindow: Bool = false
     @AppStorage("netmon.preExpandFrame") private var preExpandFrame: String = ""
 
+    @State private var showNetworkDetails = false
+    @State private var networkFrame: CGRect = .zero
+    @State private var trafficDirection: TrafficDirection?
+    @State private var trafficFrames: [TrafficDirection: CGRect] = [:]
+
     var body: some View {
         ZStack {
             GlassBackground()
                 .environmentObject(store)
 
             VStack(spacing: 0) {
-                HeaderBar()
+                HeaderBar(trafficDirection: $trafficDirection, showNetworkDetails: $showNetworkDetails)
                     .environmentObject(store)
 
                 if !store.isCompact {
@@ -31,6 +36,9 @@ struct ContentView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .coordinateSpace(name: "widget")
+        .onPreferenceChange(NetworkBadgeFrame.self) { networkFrame = $0 }
+        .onPreferenceChange(TrafficBadgeFrames.self) { trafficFrames = $0 }
         .onAppear { updateWindowTitle() }
         .onChange(of: store.endpoints) { _, _ in updateWindowTitle() }
         .onReceive(NotificationCenter.default.publisher(for: .netMonToggleExpand)) { _ in
@@ -44,15 +52,10 @@ struct ContentView: View {
         }
         .overlay(
             ClickHandler(
-                networkHelpText: store.networkStatus.helpText,
-                onNetworkClick: {
-                    guard let address = store.networkStatus.ipv4Address else {
-                        NSSound.beep()
-                        return
-                    }
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(address, forType: .string)
-                },
+                trafficFrames: trafficFrames,
+                onTrafficClick: { trafficDirection = $0 },
+                networkFrame: networkFrame,
+                onNetworkClick: { showNetworkDetails = true },
                 onDoubleClick: { event in
                     handleDoubleClick(event)
                 },
@@ -271,6 +274,8 @@ struct ContentView: View {
 // ---------------------------------------------------------------------------
 struct HeaderBar: View {
     @EnvironmentObject var store: PingStore
+    @Binding var trafficDirection: TrafficDirection?
+    @Binding var showNetworkDetails: Bool
 
     var body: some View {
         GeometryReader { geo in
@@ -299,10 +304,12 @@ struct HeaderBar: View {
                               value: bytesDownText,
                               color: bytesInColor(),
                               style: style)
+                        .modifier(TrafficBadge(direction: .down, selection: $trafficDirection))
                     metricBox(label: bytesUpLabel(for: style.labelMode),
                               value: bytesUpText,
                               color: bytesOutColor(),
                               style: style)
+                        .modifier(TrafficBadge(direction: .up, selection: $trafficDirection))
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
@@ -428,7 +435,9 @@ struct HeaderBar: View {
 
         return HStack(spacing: 3) {
             Image(systemName: status.symbolName)
-                .font(.system(size: style.valueSize - 1.2, weight: .semibold))
+                .resizable()
+                .scaledToFit()
+                .frame(width: style.valueSize + 6, height: style.valueSize + 3)
             if showAddress, let address = status.ipv4Address {
                 Text(address)
                     .font(.system(size: style.valueSize - 1.4,
@@ -439,12 +448,21 @@ struct HeaderBar: View {
         }
         .foregroundStyle(color)
         .padding(.horizontal, showAddress ? 6 : 3)
-        .padding(.vertical, style.verticalPadding + 0.4)
+        .padding(.vertical, style.verticalPadding)
         .background(color.opacity(0.15))
         .clipShape(Capsule())
         .overlay(Capsule().strokeBorder(color.opacity(0.30), lineWidth: 0.5))
-        .help(status.helpText)
-        .accessibilityLabel(status.helpText.replacingOccurrences(of: "\n", with: ", "))
+        .background(GeometryReader { geometry in
+            Color.clear.preference(key: NetworkBadgeFrame.self,
+                                   value: geometry.frame(in: .named("widget")))
+        })
+        .accessibilityAddTraits(.isButton)
+        .accessibilityLabel("Network details")
+        .accessibilityValue(status.helpText.replacingOccurrences(of: "\n", with: ", "))
+        .accessibilityAction { showNetworkDetails = true }
+        .popover(isPresented: $showNetworkDetails, arrowEdge: .bottom) {
+            NetworkDetailsView(status: store.networkStatus)
+        }
     }
 
     private func latencyLabel(for mode: HeaderStyle.LabelMode) -> String {
@@ -486,37 +504,47 @@ struct HeaderBar: View {
 // Unified double-click + right-click handler
 // ---------------------------------------------------------------------------
 struct ClickHandler: NSViewRepresentable {
-    let networkHelpText: String
+    var trafficFrames: [TrafficDirection: CGRect]
+    var onTrafficClick: (TrafficDirection) -> Void
+    let networkFrame: CGRect
     let onNetworkClick: () -> Void
     let onDoubleClick: (NSEvent) -> Void
     let onRightClick:  (NSEvent) -> Void
 
     func makeNSView(context: Context) -> ClickView {
-        ClickView(networkHelpText: networkHelpText,
+        ClickView(trafficFrames: trafficFrames, onTrafficClick: onTrafficClick,
+                  networkFrame: networkFrame,
                   onNetworkClick: onNetworkClick,
                   onDoubleClick: onDoubleClick,
                   onRightClick: onRightClick)
     }
     func updateNSView(_ v: ClickView, context: Context) {
-        v.networkHelpText = networkHelpText
+        v.trafficFrames = trafficFrames
+        v.onTrafficClick = onTrafficClick
+        v.networkFrame = networkFrame
         v.onNetworkClick = onNetworkClick
         v.onDoubleClick = onDoubleClick
         v.onRightClick  = onRightClick
     }
 }
 
-class ClickView: NSView, NSViewToolTipOwner {
-    var networkHelpText: String
+class ClickView: NSView {
+    var trafficFrames: [TrafficDirection: CGRect]
+    var onTrafficClick: (TrafficDirection) -> Void
+    var networkFrame: CGRect
     var onNetworkClick: () -> Void
     var onDoubleClick: (NSEvent) -> Void
     var onRightClick:  (NSEvent) -> Void
-    private var networkToolTipTag: NSView.ToolTipTag?
 
-    init(networkHelpText: String,
+    init(trafficFrames: [TrafficDirection: CGRect],
+         onTrafficClick: @escaping (TrafficDirection) -> Void,
+         networkFrame: CGRect,
          onNetworkClick: @escaping () -> Void,
          onDoubleClick: @escaping (NSEvent) -> Void,
          onRightClick: @escaping (NSEvent) -> Void) {
-        self.networkHelpText = networkHelpText
+        self.trafficFrames = trafficFrames
+        self.onTrafficClick = onTrafficClick
+        self.networkFrame = networkFrame
         self.onNetworkClick = onNetworkClick
         self.onDoubleClick = onDoubleClick
         self.onRightClick  = onRightClick
@@ -524,62 +552,15 @@ class ClickView: NSView, NSViewToolTipOwner {
     }
     required init?(coder: NSCoder) { fatalError() }
 
-    override func layout() {
-        super.layout()
-        updateNetworkToolTipRect()
-    }
-
-    private func updateNetworkToolTipRect() {
-        if let tag = networkToolTipTag {
-            removeToolTip(tag)
-            networkToolTipTag = nil
-        }
-        guard bounds.width > 8, bounds.height > 0 else { return }
-        let headerHeight = min(bounds.height, 40)
-        let indicatorWidth: CGFloat = bounds.width >= 400 ? 205 : 78
-        let rect = NSRect(x: 8,
-                          y: bounds.maxY - headerHeight,
-                          width: min(indicatorWidth, bounds.width - 8),
-                          height: headerHeight)
-        networkToolTipTag = addToolTip(rect, owner: self, userData: nil)
-    }
-
-    func view(_ view: NSView,
-              stringForToolTip tag: NSView.ToolTipTag,
-              point: NSPoint,
-              userData data: UnsafeMutableRawPointer?) -> String {
-        networkHelpText
-    }
-
-    private var networkIndicatorClickRect: NSRect {
-        let headerHeight = min(bounds.height, 40)
-        let x: CGFloat
-        let width: CGFloat
-        if bounds.width >= 400 {
-            x = 64
-            width = 150
-        } else if bounds.width >= 275 {
-            x = 58
-            width = 48
-        } else if bounds.width >= 200 {
-            x = 42
-            width = 45
-        } else {
-            x = 22
-            width = 58
-        }
-        return NSRect(x: x,
-                      y: bounds.maxY - headerHeight,
-                      width: width,
-                      height: headerHeight)
-    }
-
     override func mouseDown(with event: NSEvent) {
         if event.clickCount == 2 {
             onDoubleClick(event)
         } else if event.clickCount == 1 {
             let point = convert(event.locationInWindow, from: nil)
-            if networkIndicatorClickRect.contains(point) {
+            let headerPoint = CGPoint(x: point.x, y: bounds.height - point.y)
+            if let direction = trafficFrames.first(where: { $0.value.contains(headerPoint) })?.key {
+                onTrafficClick(direction)
+            } else if networkFrame.contains(headerPoint) {
                 onNetworkClick()
             }
         }

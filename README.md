@@ -5,8 +5,8 @@ A minimal macOS network monitor for your menu bar or a floating desktop widget.
 NetMon starts in menu bar mode by default, showing live, color-coded ping latency.
 Click the latency to show or hide the regular graph widget beneath the menu bar
 item, on the screen you clicked. The menu bar readout stays visible. The widget
-keeps its usual resizing, graph controls, and interface icon: hover over the icon
-for interface/IP details or click it to copy the IP address. Right-click the
+keeps its usual resizing, graph controls, and interface icon: click the icon
+for interface/IP details in a popover. Right-click the
 widget for its controls or to quit. `— ms` means waiting for the first sample;
 `∞ ms` means packet loss. Your mode choice is remembered across launches.
 
@@ -15,6 +15,11 @@ Widget** or **Quit NetMon**. To return, right-click the floating widget and
 choose **Switch to Menu Bar**.
 When the menu bar is already active, the widget instead offers **Remove Menu Bar**,
 which keeps the widget open and switches back to floating-widget mode.
+
+Click either traffic badge to see the five processes with the highest current
+download or upload rates. The list measures one-second intervals while open;
+closing it stops sampling. Rates cover non-loopback TCP/UDP traffic reported by
+macOS and may differ from the interface totals in the graph.
 
 ## Features
 
